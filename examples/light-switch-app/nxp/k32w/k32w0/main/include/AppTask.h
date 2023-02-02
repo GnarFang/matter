@@ -22,10 +22,18 @@
 #include <stdint.h>
 
 #include "AppEvent.h"
-#include "K32W0FactoryDataProvider.h"
 
-#include <platform/CHIPDeviceLayer.h>
+#include "CHIPProjectConfig.h"
+
+#if CONFIG_CHIP_K32W0_REAL_FACTORY_DATA
+#include "K32W0FactoryDataProvider.h"
+#if CHIP_DEVICE_CONFIG_USE_CUSTOM_PROVIDER
+#include "CustomFactoryDataProvider.h"
+#endif
+#endif
+
 #include <app/clusters/identify-server/identify-server.h>
+#include <platform/CHIPDeviceLayer.h>
 
 #include "FreeRTOS.h"
 #include "timers.h"
@@ -40,6 +48,15 @@
 
 class AppTask
 {
+public:
+#if CONFIG_CHIP_K32W0_REAL_FACTORY_DATA
+#if CHIP_DEVICE_CONFIG_USE_CUSTOM_PROVIDER
+    using FactoryDataProvider = chip::DeviceLayer::CustomFactoryDataProvider;
+#else
+    using FactoryDataProvider = chip::DeviceLayer::K32W0FactoryDataProvider;
+#endif
+#endif
+
 public:
     CHIP_ERROR StartAppTask();
     static void AppTaskMain(void * pvParameter);
@@ -108,7 +125,6 @@ private:
 
     static AppTask sAppTask;
 
-    chip::DeviceLayer::K32W0FactoryDataProvider mK32W0FactoryDataProvider;
 };
 
 inline AppTask & GetAppTask(void)
