@@ -49,14 +49,14 @@
 #define DEBUG_PRINTF(...)
 #endif /* DB_DEBUG */
 
-#define LL_LOG( f, t )
-// #define LL_LOG( f, t ) filelog( f, t )
+// #define LL_LOG( f, t )
+#define LL_LOG( f, t ) filelog( f, t )
 
 #define NEWDB_VERSION         1
 
 #define NEWDB_MAX_SYSTEM      20
 #define NEWDB_MAX_ROOMS       10
-#define NEWDB_MAX_DEVICES     20
+#define NEWDB_MAX_DEVICES     40
 #define NEWDB_MAX_PLUGHIST    400
 #define NEWDB_MAX_ZCB         40
 
@@ -66,8 +66,8 @@
 
 typedef struct newdb {
     int version;
-
     int numwrites;
+    int network_state;
 
     int lastupdate_sys;
     int lastupdate_rooms;
@@ -466,6 +466,7 @@ static int newDbRestore( void ) {
                     newLogAdd( NEWLOG_FROM_DATABASE, logbuffer );
                     LL_LOG( "/tmp/dbby", logbuffer );
                 }
+
             }
 
 #endif // DB_MULTIPLE_FILES
@@ -1020,33 +1021,6 @@ int newDbDevicesRemoveWithClearFlag( void ) {
 void newDbPrintDevices( void ) {
 
     int found = 0;
-
-    // if ( newDbSharedMemory ) {
-    //     newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
-    //     semP( NEWDB_SEMKEY );
-    //     for ( int i=0; i<NEWDB_MAX_DEVICES; i++ ) {
-    //         if( pnewdb->devices[i].flags & FLAG_DEV_JOINED == 1) {
-    //             printf( "devces info: \n ");
-    //             printf( "%4d : ", i );
-    //             dump( (char *)&pnewdb->devices[i].mac, LEN_MAC_NIBBLE+2);
-    //             dump( (char *)&pnewdb->devices[i].ty, LEN_TY);
-
-    //             for ( int j=0; i<NEWDB_MAX_ZCB && !found; j++ ) {
-    //                 if ( pnewdb->zcb[i].status != ZCB_STATUS_FREE ) {
-    //                     if ( strcmp( pnewdb->zcb[j].mac, pnewdb->devices[i].mac ) == 0 ) {
-    //                         printf( "zcb index %4d : ", j );
-    //                         dump( (char *)&pnewdb->zcb[j].saddr, 2);
-    //                         printf("zcb type is %d \n", pnewdb->zcb[j].type);
-    //                         printf("zcb SupportedClusters %#llx \n", pnewdb->zcb[j].uSupportedClusters);
-    //                         found = 1;
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         found = 0;
-    //     }
-    //     semV( NEWDB_SEMKEY );
-    // }
     
     if ( newDbSharedMemory ) {
         newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
@@ -1069,26 +1043,21 @@ void newDbPrintDevices( void ) {
 }
 
 
-void newDbGetOneZcbNode( newdb_zcb_t * pzcb ) {
+// void newDbPrintDevices( void ) {
+    
+//     if ( newDbSharedMemory ) {
+//         newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
+//         semP( NEWDB_SEMKEY );
+//         for ( int i=0; i<NEWDB_MAX_ZCB; i++ ) {
+//             if( pnewdb->zcb[i].status != ZCB_STATUS_FREE ) {
+//                         dump( (char *)&pnewdb->devices[i].mac, LEN_MAC_NIBBLE);
+//                         dump( (char *)&pnewdb->zcb[i].saddr, 2);
 
-    int found = 0;
-
-    if ( newDbSharedMemory ) {
-        newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
-        semP( NEWDB_SEMKEY );
-        for ( int i=0; i<NEWDB_MAX_ZCB; i++ ) {
-            if( pnewdb->zcb[i].status != ZCB_STATUS_FREE ) {
-                for ( int j=0; j<NEWDB_MAX_DEVICES && !found; j++ ) {
-                    if ( strcmp( pnewdb->zcb[i].mac, pnewdb->devices[j].mac ) == 0) {
-                        newDbGetZcb(pnewdb->zcb[i].mac, pzcb);
-                        found = 1;
-                    }
-                }
-            }
-        }
-        semV( NEWDB_SEMKEY );
-    }
-}
+//             }
+//         }
+//         semV( NEWDB_SEMKEY );
+//     }
+// }
 
 
 // ------------------------------------------------------------------
@@ -2054,4 +2023,65 @@ int newDbLoopZcb( zcbCb_t zcbCb ) {
         return( ok );
     }
     return 0;
+}
+
+int newDbGetZigbeeDeviceList(zbdev_t** zbList, int maxDevices, int *nodeNum) {
+
+    int idx = 0;
+    *nodeNum = 0;
+
+    newdb_dev_t device;
+
+    if ( newDbSharedMemory ) {
+        newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
+        semP( NEWDB_SEMKEY );
+        for ( int i=0; i<maxDevices; i++ ) {
+            if ( pnewdb->zcb[i].status != ZCB_STATUS_FREE && newDbGetDevice( pnewdb->zcb[i].mac, &device ) ) {
+                zbdev_t *zigbee = (zbdev_t*)malloc(sizeof(zbdev_t));
+                zigbee->zcb = (newdb_zcb_t*)malloc(sizeof(newdb_zcb_t));
+                zigbee->dev = (newdb_dev_t*)malloc(sizeof(newdb_dev_t));
+                memcpy( zigbee->zcb, &pnewdb->zcb[i], sizeof( newdb_zcb_t ) );
+                memcpy( zigbee->dev, &device, sizeof( newdb_dev_t ) );
+                zbList[idx] = zigbee;
+                idx++;
+                (*nodeNum)++;
+            }
+        }
+        semV( NEWDB_SEMKEY );
+    }
+
+    return 1;
+}
+
+int newDbfreeZigbeeDeviceList(zbdev_t** zbList, int nodeNum)
+{
+    for ( int i=0; i<nodeNum; i++ ) {
+        free(zbList[i]->zcb);
+        free(zbList[i]->dev);
+        free(zbList[i]);
+    }
+
+    return 1;
+}
+
+
+
+void newDbSetNwkState( uint8_t state )
+{
+    newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
+    semP( NEWDB_SEMKEY );
+
+    pnewdb->network_state = (int)state;
+
+    semV( NEWDB_SEMKEY );
+}
+
+void newDbGetNwkState( int* state )
+{
+    newdb_t * pnewdb = (newdb_t *)newDbSharedMemory;
+    semP( NEWDB_SEMKEY );
+
+    *state = pnewdb->network_state;
+
+    semV( NEWDB_SEMKEY );
 }

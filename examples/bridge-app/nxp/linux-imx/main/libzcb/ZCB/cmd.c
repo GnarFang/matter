@@ -105,9 +105,10 @@ static teZcbStatus eAuthenticateOobDevice(uint64_t u64IEEEAddress, uint8_t *pau8
 
 int eGetPermitJoining(void) {
     if (eSL_SendMessage(E_SL_MSG_GET_PERMIT_JOIN, 0, NULL, NULL) != E_SL_OK) {
-        return 0;
+        return E_ZCB_ERROR;
     }
-    return 1;
+    
+    return E_ZCB_OK;
 }
 
 static teZcbStatus eSetPermitJoining(uint8_t u8Interval) {
@@ -161,14 +162,6 @@ static teZcbStatus eSetDeviceType(teModuleMode eModuleMode) {
         return E_ZCB_COMMS_FAILED;
     }
 
-    return E_ZCB_OK;
-}
-
-static teZcbStatus eStartNetwork(void) {
-    if (eSL_SendMessage(E_SL_MSG_START_NETWORK, 0, NULL, NULL) != E_SL_OK) {
-        return E_ZCB_COMMS_FAILED;
-    }
-    
     return E_ZCB_OK;
 }
 
@@ -296,8 +289,6 @@ static void HandleGetPermitResponse(void *pvUser, uint16_t u16Length, void *pvMe
     } __attribute__((__packed__)) *psGetPermitResponse = (struct _GetPermitResponse *)pvMessage;
 
     newDbSystemSaveIntval( "zcb_permit", psGetPermitResponse->u8Status );
-
-    printf(" --------- GetPermitResponse %s \n", ( psGetPermitResponse->u8Status  ) ? "Permit open" : "Permit closed");  //debug-imx
 
     newLogAdd( NEWLOG_FROM_ZCB_OUT, ( psGetPermitResponse->u8Status  ) ? "Permit open" : "Permit closed" );
 }
@@ -523,12 +514,49 @@ int cmdHandle( void ) {
 // ------------------------------------------------------------------
 // ZCB CMD
 // ------------------------------------------------------------------
-int ZcbSetPermitJoining(uint8_t u8Interval) {
-    return eSetPermitJoining(u8Interval);
+int eReqNwkState(void) {
+    if (eSL_SendMessage(E_SL_MSG_GET_ZCB_STATUS, 0, NULL, NULL) == E_SL_OK)
+        return 0;
+    
+    return -1;
 }
 
+
+int ePermitJoinOn(uint8_t u8Interval) {
+    if ( E_ZCB_OK == eSetPermitJoining(u8Interval))
+        return 0;
+
+    return -1;
+}
+
+int eStartNetwork(void) {
+    if (eSL_SendMessage(E_SL_MSG_START_NETWORK, 0, NULL, NULL) != E_SL_OK) 
+        return -1;
+    
+    return 0;
+}
+
+int eStartGateway( ) {
+
+    int TryTimes = 10;
+    int ZigbeeNetworkState = 0;
+
+    eStartNetwork();
+
+    while (TryTimes) {
+        eReqNwkState();
+        IOT_SLEEP( 1 );
+        newDbGetNwkState(&ZigbeeNetworkState);
+        if ( 1 == ZigbeeNetworkState)
+            return 0;
+
+        TryTimes--;
+    }
+    
+    printf( "**** Error ZCB start Network failed !   %d \n",ZigbeeNetworkState);
+    return -1;
+}
 
 // ------------------------------------------------------------------
 // End of file
 // ------------------------------------------------------------------
-

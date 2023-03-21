@@ -17,11 +17,12 @@ int  cmdHandle( void );
 
 
 /* control command */
+int eReqNwkState(void);
+int ePermitJoinOn(uint8_t u8Interval);
+int eStartNetwork(void);
+int eStartGateway(void);
 
-int ZcbSetPermitJoining(uint8_t u8Interval);
-
-
-
+// teZcbStatus cmdResetBridge();
 
 
 #if defined __cplusplus

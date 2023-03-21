@@ -8,6 +8,9 @@
 #include <limits.h>
 #include <stdint.h>
 
+#ifndef __NEWDB_H__
+#define __NEWDB_H__
+
 #if defined __cplusplus
 extern "C" {
 #endif
@@ -127,11 +130,16 @@ typedef struct newdb_zcb {
 
       } sClusterBitmap;
     } uSupportedClusters;
-    //uint8_t bOnOff;
     char info[LEN_CMD+2];
     uint16_t u16ProfileId;
     uint8_t  u8DeviceVersion;
+    uint8_t  hasMapped;
 } newdb_zcb_t;
+
+typedef struct zcb_node {
+    newdb_zcb_t *zcb;
+    newdb_dev_t *dev;
+} zbdev_t;
 
 typedef int (*deviceCb_t)( newdb_dev_t * pdev );
 typedef int (*plughistCb_t)( newdb_plughist_t * phist );
@@ -203,8 +211,15 @@ int newDbGetLastupdateClimate( void );
 
 void newDbPrintPlugHist( void );
 void newDbPrintDevices (void);
-void newDbGetOneZcbNode (newdb_zcb_t * pzcb);
+void newDbPrintzcbs( void );
+int newDbGetZigbeeDeviceList(zbdev_t** zbList, int maxDevices, int *nodeNum);
+int newDbfreeZigbeeDeviceList(zbdev_t** zbList, int nodeNum);
+
+void newDbSetNwkState( uint8_t state );
+void newDbGetNwkState( int *state );
 
 #if defined __cplusplus
 }
 #endif
+
+#endif /* __NEWDB_H__ */

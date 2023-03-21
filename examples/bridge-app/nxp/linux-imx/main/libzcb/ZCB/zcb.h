@@ -15,6 +15,8 @@
 #include "ZigbeeConstant.h"
 #include "Utils.h"
 
+#include "newDb.h"
+
 #if defined __cplusplus
 extern "C" {
 #endif
@@ -128,7 +130,7 @@ uint64_t zcbNodeGetExtendedAddress( uint16_t shortAddress );
 // int32_t eGetzcbNodeNum(void);
 
 /** Initialise control bridge connected to serial port */
-teZcbStatus eZCB_Init(const char *cpSerialDevice, uint32_t u32BaudRate);
+teZcbStatus eZCB_Init(char *cpSerialDevice, uint32_t u32BaudRate);
 
 
 /** Finished with control bridge - call this to tidy up */ 
@@ -138,6 +140,8 @@ teZcbStatus eZCB_Finish(void);
  *  \return E_ZCB_OK when comms established, otherwise E_ZCB_COMMS_FAILED
  */
 teZcbStatus eZCB_EstablishComms(void);
+
+teZcbStatus eZCB_SendMsg(int MsgType, int saddr);
 
 
 teZcbStatus eOnOff( uint16_t u16ShortAddress, uint8_t u8Mode );

@@ -333,4 +333,3 @@ teSerial_Status eSerial_WriteBuffer(unsigned char *data, uint32_t count)
     }
     return E_SERIAL_OK;
 }
-

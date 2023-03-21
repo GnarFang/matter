@@ -26,6 +26,8 @@
 #include <functional>
 #include <vector>
 
+#include "newDb.h"
+
 class Device
 {
 public:
@@ -39,6 +41,7 @@ public:
         kChanged_Last      = kChanged_Name,
     } Changed;
 
+    Device();
     Device(const char * szDeviceName, std::string szLocation);
     virtual ~Device() {}
 
@@ -54,6 +57,9 @@ public:
     inline std::string GetLocation() { return mLocation; };
     inline std::string GetZone() { return mZone; };
     inline void SetZone(std::string zone) { mZone = zone; };
+    inline void SetZBdev(zbdev_t* dev) { mBridgeNode = *dev; };
+    inline int GetZBSaddr() { return mBridgeNode.zcb->saddr; };
+    inline zbdev_t* GetZB() { return &mBridgeNode; };
 
 private:
     virtual void HandleDeviceChange(Device * device, Device::Changed_t changeMask) = 0;
@@ -64,6 +70,7 @@ protected:
     std::string mLocation;
     chip::EndpointId mEndpointId;
     chip::EndpointId mParentEndpointId;
+    zbdev_t mBridgeNode;
     std::string mZone;
 };
 
@@ -75,11 +82,13 @@ public:
         kChanged_OnOff = kChanged_Last << 1,
     } Changed;
 
+    DeviceOnOff();
     DeviceOnOff(const char * szDeviceName, std::string szLocation);
 
     bool IsOn();
     void SetOnOff(bool aOn);
     void Toggle();
+    void Init(const char * szDeviceName, std::string szLocation);
 
     using DeviceCallback_fn = std::function<void(DeviceOnOff *, DeviceOnOff::Changed_t)>;
     void SetChangeCallback(DeviceCallback_fn aChanged_CB);
@@ -247,6 +256,7 @@ private:
 class Action
 {
 public:
+    Action();
     Action(uint16_t actionId, std::string name, chip::app::Clusters::Actions::ActionTypeEnum type, uint16_t endpointListId,
            uint16_t supportedCommands, chip::app::Clusters::Actions::ActionStateEnum status, bool isVisible);
     inline void setName(std::string name) { mName = name; };

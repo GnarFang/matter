@@ -24,10 +24,15 @@ typedef struct sDeviceMapEntry
 // ---------------------------------------------------------------------
 // Send announce message to IoT
 // ---------------------------------------------------------------------
-
-
 void zcbHandleAnnounce( char * mac, char * devstr, char * ty );
 void SmartPlugUpdateIntervalMsg( uint64_t u64IEEEAddress, uint16_t u16UpdateInterval );
+
+
+
+// ---------------------------------------------------------------------
+// Send message to Matter
+// ---------------------------------------------------------------------
+
 
 
 #if defined __cplusplus

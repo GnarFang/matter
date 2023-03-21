@@ -769,7 +769,7 @@ static teSL_Status eSL_MessageQueue(tsSerialLink *psSerialLink, uint16_t u16Type
     {
         pthread_mutex_lock(&psSerialLink->asReaderMessageQueue[i].mutex);
 
-        DBG_vPrintf(DBG_SERIALLINK_QUEUE, "++++++++++++ reader message type 0x%04X\n", psSerialLink->asReaderMessageQueue[i].u16Type);
+        DBG_vPrintf(DBG_SERIALLINK_QUEUE, "reader message type 0x%04X\n", psSerialLink->asReaderMessageQueue[i].u16Type);
 
         if (psSerialLink->asReaderMessageQueue[i].u16Type == u16Type)
         {

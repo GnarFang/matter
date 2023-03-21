@@ -108,6 +108,8 @@ typedef enum
     E_SL_MSG_ZLL_FACTORY_NEW                =   0x0013,
     E_SL_MSG_GET_PERMIT_JOIN                =   0x0014,
     E_SL_MSG_GET_PERMIT_JOIN_RESPONSE       =   0x8014,
+    E_SL_MSG_GET_ZCB_STATUS                 =   0x0019,
+    E_SL_MSG_GET_ZCB_STATUS_RESPONSE        =   0x8019,
     E_SL_MSG_BIND                           =   0x0030,
     E_SL_MSG_BIND_RESPONSE                  =   0x8030,
     E_SL_MSG_UNBIND                         =   0x0031,

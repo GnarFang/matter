@@ -21,12 +21,12 @@
 #include "systemtable.h"
 #include "newDb.h"
 #include "dump.h"
-// #include "jsonCreate.h"
 #include "ZigbeeConstant.h"
 #include "SerialLink.h"
 #include "ZigbeeDevices.h"
 
 #include "zcb_main.h"
+#include "ZcbMessage.h"
 
 // ---------------------------------------------------------------
 // Macros
@@ -40,6 +40,27 @@
 #define DEBUG_PRINTF(...)
 #endif /* ZCB_DEBUG */
 
+// ---------------------------------------------------------------------
+// Send message to Matter
+// ---------------------------------------------------------------------
+teZcbStatus eZCB_SendMsg(int MsgType, int saddr)
+{
+    pthread_mutex_lock(&ZcbMsg.bridge_mutex);
+
+    ZcbMsg.HandleMask = false;
+    pthread_cond_signal(&ZcbMsg.bridge_cond);
+
+    if( saddr != 0) {
+        ZcbMsg.saddr = saddr;
+        ZcbMsg.msg_type = MsgType;
+    } else {
+        ZcbMsg.saddr = 0;
+    }
+
+    printf("permit join done ! \n");
+    
+    pthread_mutex_unlock(&ZcbMsg.bridge_mutex);
+}
 
 // ---------------------------------------------------------------------
 // Send announce message to IoT
@@ -214,6 +235,7 @@ void announceDevice(
         printf( "Illegal simple descriptor (0x%02x)\n", u16DeviceId );
         break;
     }
+
 }
 
 // ------------------------------------------------------------------
@@ -281,6 +303,7 @@ static void ZCB_HandleRemoveSceneResponse       (void *pvUser, uint16_t u16Lengt
 static void ZCB_HandleStoreSceneResponse        (void *pvUser, uint16_t u16Length, void *pvMessage);
 static void ZCB_HandleReadAttrResp              (void *pvUser, uint16_t u16Length, void *pvMessage);
 static void ZCB_HandleActiveEndPointResp        (void *pvUser, uint16_t u16Length, void *pvMessage);
+static void ZCB_HandleZcbStatusResponse         (void *pvUser, uint16_t u16Length, void *pvMessage);
 static void ZCB_HandleLog                       (void *pvUser, uint16_t u16Length, void *pvMessage);
 
 // ---------------------------------------------------------------
@@ -387,7 +410,7 @@ int zcbNodeSetDeviceID( uint16_t shortAddress, uint16_t deviceID ) {
 // Exported Functions
 // ---------------------------------------------------------------
 
-teZcbStatus eZCB_Init(const char *cpSerialDevice, uint32_t u32BaudRate) {
+teZcbStatus eZCB_Init(char *cpSerialDevice, uint32_t u32BaudRate) {
 
     if (eSL_Init(cpSerialDevice, u32BaudRate) != E_SL_OK) {
         return E_ZCB_COMMS_FAILED;
@@ -411,6 +434,7 @@ teZcbStatus eZCB_Init(const char *cpSerialDevice, uint32_t u32BaudRate) {
     eSL_AddListener(E_SL_MSG_STORE_SCENE_RESPONSE,       ZCB_HandleStoreSceneResponse,       NULL);
     eSL_AddListener(E_SL_MSG_READ_ATTRIBUTE_RESPONSE,    ZCB_HandleReadAttrResp,             NULL);
     eSL_AddListener(E_SL_MSG_ACTIVE_ENDPOINT_RESPONSE,   ZDActiveEndPointResp,               NULL);
+    eSL_AddListener(E_SL_MSG_GET_ZCB_STATUS_RESPONSE,    ZCB_HandleZcbStatusResponse,        NULL);
     eSL_AddListener(E_SL_MSG_LOG,                        ZCB_HandleLog,                      NULL);
 
     return E_ZCB_OK;
@@ -425,6 +449,7 @@ teZcbStatus eZCB_Finish(void) {
 
 
 teZcbStatus eZCB_EstablishComms(void) {
+#if 0
     if (eSL_SendMessage(E_SL_MSG_GET_VERSION, 0, NULL, NULL) == E_SL_OK) {
         uint16_t u16Length;
         uint32_t  *u32Version;
@@ -450,6 +475,15 @@ teZcbStatus eZCB_EstablishComms(void) {
     }
     
     return E_ZCB_COMMS_FAILED;
+#endif
+    if (eSL_SendMessage(E_SL_MSG_GET_VERSION, 0, NULL, NULL) == E_SL_OK)
+	    return E_ZCB_OK;
+    else
+    {
+        DEBUG_PRINTF( "serial port error\n");
+	    usleep(1000*1000);
+	    return E_ZCB_COMMS_FAILED;
+    }
 }
 
 
@@ -465,7 +499,7 @@ teZcbStatus eOnOff( uint16_t u16ShortAddress, uint8_t u8Mode ) {
         uint8_t     u8Mode;
     } __attribute__((__packed__)) sOnOffMessage;
 
-    DEBUG_PRINTF( "On/Off (Set Mode=%d)\n", u8Mode);
+    DEBUG_PRINTF( "%s :On/Off (Set Mode=%d)\n", __FUNCTION__, u8Mode);
 
     if (u8Mode > 2) {
         /* Illegal value */
@@ -1524,6 +1558,9 @@ static void ZCB_HandleDeviceAnnounce(void *pvUser, uint16_t u16Length, void *pvM
       }
     }
 
+    ZcbMsg.AnnounceStart = true;
+    // eZCB_SendMsg( BRIDGE_ADD_DEV, &sZcb, NULL);
+
     return;
 }
 
@@ -1847,6 +1884,12 @@ static void ZCB_HandleReadAttrResp(
       eZCB_AddGroupMembership( 0x0000, 0x0AA1 );
     }
   }
+
+  if ( ZcbMsg.AnnounceStart == true) {
+    ZcbMsg.AnnounceStart = false;
+    eZCB_SendMsg( BRIDGE_ADD_DEV, u16ShortAddr);
+  }
+
   return;
 }
 
@@ -1961,7 +2004,17 @@ ZCB_HandleLog(
       psMessage->u8Level);
 }
 
+static void ZCB_HandleZcbStatusResponse(void *pvUser, uint16_t u16Length, void *pvMessage) {
+    DEBUG_PRINTF( "\n************ ZCB_HandleZcbStatusResponse\n" );
 
+    struct _sZcbStatusResponse {
+        uint8_t     u8Status;
+    } __attribute__((__packed__)) *psZcbStatusResponse = (struct _sZcbStatusResponse *)pvMessage;
+
+    newDbSetNwkState(psZcbStatusResponse->u8Status);
+
+    printf("GetZcbStatusResponse %s \n", ( psZcbStatusResponse->u8Status  ) ? "Network On" : "Network Off");
+}
 
 // ------------------------------------------------------------------
 // END OF FILE

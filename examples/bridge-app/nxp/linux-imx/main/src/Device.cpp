@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *    Copyright (c) 2019 Google LLC.
  *    All rights reserved.
  *
@@ -22,13 +22,15 @@
 #include <cstdio>
 #include <platform/CHIPDeviceLayer.h>
 
+#include "zcb.h"
+
 using namespace chip::app::Clusters::Actions;
 
-// LightingManager LightingManager::sLight;
+Device::Device()  { }
 
 Device::Device(const char * szDeviceName, std::string szLocation)
 {
-    strncpy(mName, szDeviceName, sizeof(mName));
+    chip::Platform::CopyString(mName, szDeviceName);
     mLocation   = szLocation;
     mReachable  = false;
     mEndpointId = 0;
@@ -66,7 +68,7 @@ void Device::SetName(const char * szName)
 
     ChipLogProgress(DeviceLayer, "Device[%s]: New Name=\"%s\"", mName, szName);
 
-    strncpy(mName, szName, sizeof(mName));
+    chip::Platform::CopyString(mName, szName);
 
     if (changed)
     {
@@ -88,8 +90,19 @@ void Device::SetLocation(std::string szLocation)
     }
 }
 
+DeviceOnOff::DeviceOnOff() {}
+
 DeviceOnOff::DeviceOnOff(const char * szDeviceName, std::string szLocation) : Device(szDeviceName, szLocation)
 {
+    mOn = false;
+}
+
+void DeviceOnOff::Init(const char * szDeviceName, std::string szLocation)
+{
+    chip::Platform::CopyString(mName, szDeviceName);
+    mLocation   = szLocation;
+    mReachable  = false;
+    mEndpointId = 0;
     mOn = false;
 }
 
@@ -109,6 +122,7 @@ void DeviceOnOff::SetOnOff(bool aOn)
     if ((changed) && (mChanged_CB))
     {
         mChanged_CB(this, kChanged_OnOff);
+        eOnOff(uint16_t(this->GetZBSaddr()), aOn);
     }
 }
 
@@ -305,6 +319,8 @@ Room::Room(std::string name, uint16_t endpointListId, EndpointListTypeEnum type,
     mType           = type;
     mIsVisible      = isVisible;
 }
+
+Action::Action() {}
 
 Action::Action(uint16_t actionId, std::string name, ActionTypeEnum type, uint16_t endpointListId, uint16_t supportedCommands,
                ActionStateEnum status, bool isVisible)
