@@ -35,6 +35,10 @@
 // time to wait in ms that Zigbee commands are completed
 #define COMMAND_COMPLETED_TIME_MS (300)
 
+// maximum time in ms to wait for the Zigbee command ack before giving up (prevents blocking the
+// Matter main loop forever if the RCP never answers)
+#define SEND_COMMAND_ACK_TIMEOUT_MS (500)
+
 /* Device states enumeration */
 enum m2z_device_state_e
 {
@@ -269,9 +273,9 @@ void m2z_schedule_request_ieee_addr(zb_cb_param_t dev_idx);
 void m2z_schedule_request_attr_disc(zb_cb_param_t dev_idx);
 void m2z_schedule_request_simple_desc(zb_cb_param_t dev_idx);
 void m2z_schedule_request_active_ep(zb_cb_param_t dev_idx);
-void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id);
-void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t* p_attr_value);
-void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size);
+void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t attr_id);
+void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t* p_attr_value);
+void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size);
 void m2z_request_send_command(zb_cb_param_t param);
 void m2z_request_read_attribute(zb_cb_param_t param);
 void m2z_request_write_attribute(zb_cb_param_t param);

@@ -384,89 +384,113 @@ BridgeDevMgr::~BridgeDevMgr()
     syslog(LOG_INFO, "%s: free BridgeDevMgr ! \n", __FUNCTION__);
 }
 
-void BridgeDevMgr::AddNewZigbeeNode(m2z_device_params_t* zigbee_node)
+int BridgeDevMgr::AddNewZigbeeDevice(m2z_device_params_t* zigbee_node)
 {
-    Device * DiscoveredDevice     = new Device("Dummy Zigbee Device", "Dummy Location");
+    if (zigbee_node == nullptr || zigbee_node->endpoint == 0)
+    {
+        syslog(LOG_WARNING, "%s: invalid zigbee node", __FUNCTION__);
+        return -1;
+    }
+
+    // Device level discovery (name, location, device id) is done once per Zigbee node.
+    Device * DiscoveredDevice = new Device("Dummy Zigbee Device", "Dummy Location");
     DiscoveredDevice->SetZigbeeRcp(zigbee_node);
     DiscoveredDevice->DiscoverNode(zigbee_node);
     DiscoveredDevice->SetClusters();
-    DiscoveredDevice->SetChangeCallback(&HandleZigbeeDeviceStatusChanged);
-    std::string name=DiscoveredDevice->GetName();
-    std::string location=DiscoveredDevice->GetLocation();
-    std::string supported_clusters=DiscoveredDevice->GetClusters();
-    std::string device_id=DiscoveredDevice->GetEndpointDeviceId();
-    
-    syslog(LOG_INFO, "%s : Discovered Zigbee Device: Name %s Location: %s Device Id: %s SupportedClusters: %s",__FUNCTION__,
-                    name.c_str(), location.c_str(), device_id.c_str(), supported_clusters.c_str());
-    
-    bool state = false;
-    //if(DiscoveredDevice->NodeReadAttributeIdFromClusterId(zigbee_node, ZB_ZCL_CLUSTER_ID_ON_OFF, ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) == 1)
-    //{
-        //state = true;
-    //}
-    //else
-    //{
-        //state = false;
-    //}
-    DiscoveredDevice->InitState(state);
+    std::string name              = DiscoveredDevice->GetName();
+    std::string location          = DiscoveredDevice->GetLocation();
+    std::string supported_clusters = DiscoveredDevice->GetClusters();
+    std::string device_id         = DiscoveredDevice->GetEndpointDeviceId();
+
+    syslog(LOG_INFO, "%s : Discovered Zigbee Device: Name %s Location: %s Device Id: %s SupportedClusters: %s", __FUNCTION__,
+           name.c_str(), location.c_str(), device_id.c_str(), supported_clusters.c_str());
+
+    delete DiscoveredDevice;
+
+    // One Matter dynamic endpoint per Zigbee endpoint: a multi gang device exposes one Matter
+    // endpoint per gang, which is required because a Matter endpoint can carry only one instance
+    // of a given cluster.
+    int added = 0;
+    bool multi_ep = (zigbee_node->endpoint > 1);
+    for (uint8_t ep_index = 0; ep_index < zigbee_node->endpoint; ep_index++)
+    {
+        std::string ep_name = name;
+        if (multi_ep)
+        {
+            ep_name += "-EP" + std::to_string(zigbee_node->endpoints[ep_index].ep_id);
+        }
+        if (AddNewZigbeeEndpoint(zigbee_node, ep_index, ep_name, location) >= 0)
+        {
+            added++;
+        }
+    }
+
+    syslog(LOG_INFO, "%s: added %d Matter endpoint(s) for Zigbee node 0x%04x", __FUNCTION__, added, zigbee_node->short_addr);
+    return added;
+}
+
+int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t ep_index, const std::string & name, const std::string & location)
+{
+    if (zigbee_node == nullptr || ep_index >= zigbee_node->endpoint)
+    {
+        return -1;
+    }
+
+    zb_uint16_t ep_id = zigbee_node->endpoints[ep_index].ep_id;
+
+    Device * newDevice = new Device(name, location);
+    newDevice->SetZigbeeRcp(zigbee_node);
+    newDevice->SetZigbeeEp(ep_id);
+    newDevice->SetMatterDeviceTypes(zigbee_node, ep_index);
+    newDevice->SetChangeCallback(&HandleZigbeeDeviceStatusChanged);
+    newDevice->InitState(false);
 
     zb_uint16_t mapped_clusters_number = 0;
-    // First of all, add the "Descriptors" and "Bridged Device Basic Information" clusters
+
+    // Descriptor and Bridged Device Basic Information are mandatory on every bridged endpoint.
     for ( zb_uint16_t attr_idx = DUMMY_ENDPOINT_2_FIRST_CLUSTER_INDEX; attr_idx < GENERATED_CLUSTER_COUNT; attr_idx++)
     {
         if (generatedClusters[attr_idx].clusterId == Descriptor::Id)
         {
             syslog(LOG_DEBUG, "\t%s : Found GENERATED_CLUSTERS clusterId: %d ",__FUNCTION__, generatedClusters[attr_idx].clusterId);
-            DiscoveredDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
+            newDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
         }
         if (generatedClusters[attr_idx].clusterId == BridgedDeviceBasicInformation::Id)
         {
             syslog(LOG_DEBUG, "\t%s : Found GENERATED_CLUSTERS clusterId: %d ",__FUNCTION__, generatedClusters[attr_idx].clusterId);
-            DiscoveredDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
+            newDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
         }
     }
 
-    // Then, try to map all Zigbee clusters to Matter clusters
-    for ( zb_uint16_t i = 0; i < zigbee_node->endpoint; i++)
+    // Map the clusters of this Zigbee endpoint to their Matter counterparts.
+    for ( zb_uint16_t j = 0; j < (zigbee_node->endpoints[ep_index].num_in_clusters + zigbee_node->endpoints[ep_index].num_out_clusters); j++)
     {
-        syslog(LOG_INFO, "%s : EndpointId: %d",__FUNCTION__, zigbee_node->endpoints[i].ep_id);
-        syslog(LOG_INFO, "%s : Clusters number: %d",__FUNCTION__, zigbee_node->endpoints[i].num_in_clusters + zigbee_node->endpoints[i].num_out_clusters);
-        for ( zb_uint16_t j = 0; j < (zigbee_node->endpoints[i].num_in_clusters + zigbee_node->endpoints[i].num_out_clusters); j++)
+        if (!zigbee_node->endpoints[ep_index].ep_cluster[j].in_cluster)
         {
-            if(zigbee_node->endpoints[i].ep_cluster[j].in_cluster)
-            {
-                syslog(LOG_INFO, "\t%s: ClusterId: %d",__FUNCTION__, zigbee_node->endpoints[i].ep_cluster[j].cluster_id);
-                syslog(LOG_INFO, "\t%s : Attributes number: %d",__FUNCTION__, zigbee_node->endpoints[i].ep_cluster[j].num_attrs);
-                for ( zb_uint16_t k = 0; k < zigbee_node->endpoints[i].ep_cluster[j].num_attrs; k++)
-                {
-                    syslog(LOG_DEBUG, "\t\t%s : AttrId: %d",__FUNCTION__, zigbee_node->endpoints[i].ep_cluster[j].attribute[k].attr_id);
-                }
-                for ( zb_uint16_t attr_idx = DUMMY_ENDPOINT_2_FIRST_CLUSTER_INDEX; attr_idx < GENERATED_CLUSTER_COUNT; attr_idx++)
-                {
-                    // get the Matter clusterId from the Zigbee clusterId
-                    ClusterId clusterId = DiscoveredDevice->GetMatterClusterId(zigbee_node->endpoints[i].ep_cluster[j].cluster_id);
+            syslog(LOG_DEBUG, "\t%s: ClusterId: %d is OUT Zigbee cluster, skip it",__FUNCTION__, zigbee_node->endpoints[ep_index].ep_cluster[j].cluster_id);
+            continue;
+        }
 
-                    if (generatedClusters[attr_idx].clusterId == clusterId)
-                    {
-                        syslog(LOG_INFO, "\t%s : Found GENERATED_CLUSTERS clusterId: %d == zigbee_node->endpoints[%d].ep_cluster[%d].cluster_id: %d",__FUNCTION__, generatedClusters[attr_idx].clusterId,
-                                        i ,j, zigbee_node->endpoints[i].ep_cluster[j].cluster_id);
-                        DiscoveredDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
-                        break;
-                    }
-                }
-            }
-            else
+        ClusterId clusterId = newDevice->GetMatterClusterId(zigbee_node->endpoints[ep_index].ep_cluster[j].cluster_id);
+        for ( zb_uint16_t attr_idx = DUMMY_ENDPOINT_2_FIRST_CLUSTER_INDEX; attr_idx < GENERATED_CLUSTER_COUNT; attr_idx++)
+        {
+            if (generatedClusters[attr_idx].clusterId == clusterId)
             {
-                syslog(LOG_DEBUG, "\t%s: ClusterId: %d is OUT Zigbee cluster, skip it",__FUNCTION__, zigbee_node->endpoints[i].ep_cluster[j].cluster_id);
+                syslog(LOG_INFO, "\t%s : Found GENERATED_CLUSTERS clusterId: %d == zigbee_node->endpoints[%d].ep_cluster[%d].cluster_id: %d",__FUNCTION__, generatedClusters[attr_idx].clusterId,
+                       ep_index, j, zigbee_node->endpoints[ep_index].ep_cluster[j].cluster_id);
+                newDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
+                break;
             }
         }
     }
-    
-    DiscoveredDevice->endpointType.cluster = (const EmberAfCluster*)(DiscoveredDevice->clusterList);
-    DiscoveredDevice->endpointType.clusterCount = (zb_uint8_t)mapped_clusters_number;
-    DiscoveredDevice->endpointType.endpointSize = 0;
-    AddDeviceEndpoint(DiscoveredDevice, &(DiscoveredDevice->endpointType), &(DiscoveredDevice->deviceTypes),
-                    DiscoveredDevice->dataVersions, 1);
+
+    newDevice->endpointType.cluster = (const EmberAfCluster*)(newDevice->clusterList);
+    newDevice->endpointType.clusterCount = (zb_uint8_t)mapped_clusters_number;
+    newDevice->endpointType.endpointSize = 0;
+    newDevice->SetEndpointClustersCount((int)mapped_clusters_number);
+
+    return AddDeviceEndpoint(newDevice, &(newDevice->endpointType), newDevice->deviceTypes,
+                             newDevice->dataVersions, 1);
 }
 
 //void BridgeDevMgr::MapZigbeeNodes()
@@ -571,7 +595,7 @@ int BridgeDevMgr::AddDeviceEndpoint(Device * dev, EmberAfEndpointType *ep, Ember
                 dev->SetEndpointId(mCurrentEndpointId);
                 dev->SetParentEndpointId(parentEndpointId);
                 
-                chip::Span<EmberAfDeviceType> device_types(deviceTypeList, /* current_endpoint->device_type_count*/ 2);
+                chip::Span<EmberAfDeviceType> device_types(deviceTypeList, dev->GetDeviceTypeCount());
                 chip::Span<chip::DataVersion> data_versions(dataVersionStorage, dev->GetEndpointClustersCount());
                 
                 ret = emberAfSetDynamicEndpoint(index, mCurrentEndpointId, ep, data_versions, device_types, parentEndpointId);
@@ -643,7 +667,7 @@ void * BridgeDevMgr::ZigbeeRcpComm_handler(void * context)
                 {
                     case BRIDGE_ADD_DEV: {
                         ZigbeeRcp_device->dev_state = ANNOUNCE_COMPLETED;
-                        ThisMgr->AddNewZigbeeNode(ZigbeeRcp_device);
+                        ThisMgr->AddNewZigbeeDevice(ZigbeeRcp_device);
                         ZigbeeRcpMsg.ZigbeeRcp_dev      = { 0 };
                         ZigbeeRcpMsg.msg_type = BRIDGE_UNKNOW;
                         while(ZigbeeRcp_device->dev_state == ANNOUNCE_COMPLETED)
@@ -656,45 +680,38 @@ void * BridgeDevMgr::ZigbeeRcpComm_handler(void * context)
                     break;
 
                 case BRIDGE_SET_DEV_UNSUPPORTED: {
-                    // find which Device is ZigbeeRcp_device from the message
+                    // A Zigbee node may own several Matter endpoints: disable all of them.
                     uint8_t index = 0;
-                    Device *dev;
                     while (index < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
                     {
-                        dev = gDevices[index];
-                        if( dev->GetZigbeeRcp() == ZigbeeRcp_device)
+                        Device * dev = gDevices[index];
+                        if (dev != nullptr && dev->GetZigbeeRcp() == ZigbeeRcp_device)
                         {
                             syslog(LOG_DEBUG, "%s: BRIDGE_SET_DEV_UNSUPPORTED: dev->GetZigbeeRcp(): 0x%x ZigbeeRcp_device: %x \n", __FUNCTION__,dev->GetZigbeeRcp(), ZigbeeRcp_device);
-                            break;
+                            syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_UNSUPPORTED: ---> UNSUPPORTED Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
+                            DeviceLayer::StackLock lock;
+                            emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), false);
                         }
-                        
+                        index++;
                     }
-                    // Device to be set as UNSUPPORTED Dynamic Endpoint was found
-                    syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_UNSUPPORTED: ---> UNSUPPORTED Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
-                    DeviceLayer::StackLock lock;
-                    emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), false);
                     ZigbeeRcp_device->dev_state = BRIDGED_LEFT_NETWORK;
-
                 }
                 break;
                 case BRIDGE_SET_DEV_ACTIVE: {
-                    // find which Device is ZigbeeRcp_device from the message
+                    // A Zigbee node may own several Matter endpoints: enable all of them.
                     uint8_t index = 0;
-                    Device *dev;
                     while (index < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
                     {
-                        dev = gDevices[index];
-                        if( dev->GetZigbeeRcp() == ZigbeeRcp_device)
+                        Device * dev = gDevices[index];
+                        if (dev != nullptr && dev->GetZigbeeRcp() == ZigbeeRcp_device)
                         {
                             syslog(LOG_DEBUG, "%s: BRIDGE_SET_DEV_ACTIVE: dev->GetZigbeeRcp(): 0x%x ZigbeeRcp_device: %x \n", __FUNCTION__,dev->GetZigbeeRcp(), ZigbeeRcp_device);
-                            break;
+                            syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_ACTIVE: ---> Activate Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
+                            DeviceLayer::StackLock lock;
+                            emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), true);
                         }
-                        
+                        index++;
                     }
-                    // Device to be set as UNSUPPORTED Dynamic Endpoint was found
-                    syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_ACTIVE: ---> Activate Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
-                    DeviceLayer::StackLock lock;
-                    emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), true);
                     ZigbeeRcp_device->dev_state = BRIDGED_REACHABLE;
                 }
                 break;
@@ -839,12 +856,13 @@ Protocols::InteractionModel::Status HandleReadBridgedDeviceBasicAttribute(Device
 Protocols::InteractionModel::Status BridgeDevMgr::HandleReadAttribute(Device * dev, ClusterId clusterId, chip::AttributeId attributeId, uint8_t * buffer, uint16_t maxReadLength)
 {
     chip::AttributeId translated_attributeId = attributeId;
+    bool is_bridged_basic = (clusterId == BridgedDeviceBasicInformation::Id);
     
     syslog(LOG_DEBUG, "%s: attrId=%d, maxReadLength=%d",__FUNCTION__, translated_attributeId,
                     maxReadLength);
 
     // if clusterId is BridgedDeviceBasicInformation::Id
-    if(clusterId == BridgedDeviceBasicInformation::Id)
+    if(is_bridged_basic)
     {
         // Zigbee clusterId should be 0x0 (the Basic Zigbee cluster)
         clusterId = 0;
@@ -878,7 +896,15 @@ Protocols::InteractionModel::Status BridgeDevMgr::HandleReadAttribute(Device * d
         }
         
     }
-    dev->readAttribute(dev, (uint16_t)clusterId, (uint16_t)translated_attributeId);
+    if (is_bridged_basic)
+    {
+        // The Zigbee Basic cluster is a node level cluster: read it from whichever endpoint carries it.
+        m2z_schedule_read_attribute(dev->GetZigbeeRcp(), MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX, (uint16_t)clusterId, (uint16_t)translated_attributeId);
+    }
+    else
+    {
+        dev->readAttribute(dev, (uint16_t)clusterId, (uint16_t)translated_attributeId);
+    }
     usleep(COMMAND_COMPLETED_TIME_MS * 1000);
     dev->NodeReadAttributeIdFromClusterId(dev->GetZigbeeRcp(), (uint16_t)clusterId, (uint16_t)translated_attributeId, buffer, maxReadLength);
     //if ((attributeId == OnOff::Attributes::OnOff::Id) && (maxReadLength == 1))

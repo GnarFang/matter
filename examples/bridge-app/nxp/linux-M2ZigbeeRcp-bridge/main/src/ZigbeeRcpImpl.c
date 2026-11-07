@@ -1020,10 +1020,13 @@ void m2z_handler_disc_attr_resp(zb_bufid_t param, zb_zcl_parsed_hdr_t *cmd_info)
     syslog(LOG_DEBUG, "<< %s", __FUNCTION__);
 }
 
-void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id)
+void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t attr_id)
 {
     zb_uint16_t dev_idx = m2z_dev_get_index_by_short_addr(dev->short_addr);
-    zb_uint16_t ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    if (ep_id == MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX)
+    {
+        ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    }
     zb_uint16_t ep_idx = m2z_dev_get_ep_idx_by_short_addr_and_ep_id(dev->short_addr, ep_id);
     zb_uint16_t cluster_idx = m2z_dev_get_cluster_idx_by_short_addr_and_ep_id_and_cluster_id(dev->short_addr, ep_id, cluster_id);
     zb_uint16_t attr_idx = m2z_dev_get_attr_idx_by_short_addr_and_ep_id_and_cluster_id(dev->short_addr, ep_id, cluster_id, attr_id);
@@ -1045,10 +1048,13 @@ void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_i
     zb_buf_get_out_delayed_ext(m2z_request_read_attribute, dev_idx, 0);
 }
 
-void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t * p_attr_value)
+void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t * p_attr_value)
 {
     zb_uint16_t dev_idx = m2z_dev_get_index_by_short_addr(dev->short_addr);
-    zb_uint16_t ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    if (ep_id == MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX)
+    {
+        ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    }
     zb_uint16_t ep_idx = m2z_dev_get_ep_idx_by_short_addr_and_ep_id(dev->short_addr, ep_id);
     zb_uint16_t cluster_idx = m2z_dev_get_cluster_idx_by_short_addr_and_ep_id_and_cluster_id(dev->short_addr, ep_id, cluster_id);
     zb_uint16_t attr_idx = m2z_dev_get_attr_idx_by_short_addr_and_ep_id_and_cluster_id(dev->short_addr, ep_id, cluster_id, attr_id);
@@ -1070,11 +1076,14 @@ void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_
     zb_buf_get_out_delayed_ext(m2z_request_write_attribute, dev_idx, 0);
 }
 
-void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size)
+void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size)
 {
     syslog(LOG_DEBUG, ">> %s ", __FUNCTION__);
     zb_uint16_t dev_idx = m2z_dev_get_index_by_short_addr(dev->short_addr);
-    zb_uint16_t ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    if (ep_id == MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX)
+    {
+        ep_id = m2z_dev_get_ep_id_by_short_addr_and_cluster_id(dev->short_addr, cluster_id);
+    }
     zb_uint16_t ep_idx = m2z_dev_get_ep_idx_by_short_addr_and_ep_id(dev->short_addr, ep_id);
     zb_uint16_t cluster_idx = m2z_dev_get_cluster_idx_by_short_addr_and_ep_id_and_cluster_id(dev->short_addr, ep_id, cluster_id);
     
@@ -1088,10 +1097,19 @@ void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id,
     memcpy(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].command_req.cmd_data, cmd_data, cmd_size);
     
     zb_buf_get_out_delayed_ext(m2z_request_send_command, dev_idx, 0);
-    while(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command)
+    uint16_t waited_ms = 0;
+    while(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command &&
+          waited_ms < SEND_COMMAND_ACK_TIMEOUT_MS)
     {
-        usleep(100);
-    };
+        usleep(1000);
+        waited_ms++;
+    }
+    if(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command)
+    {
+        syslog(LOG_WARNING, "%s: no ack for dev %u ep 0x%04x cluster 0x%04x cmd 0x%02x after %d ms, dropping request",
+               __FUNCTION__, (unsigned)dev_idx, (unsigned)ep_id, (unsigned)cluster_id, (unsigned)cmd_id, SEND_COMMAND_ACK_TIMEOUT_MS);
+        g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command = false;
+    }
     usleep(COMMAND_COMPLETED_TIME_MS * 1000);
     syslog(LOG_DEBUG, "<< %s ", __FUNCTION__);
 

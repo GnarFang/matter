@@ -40,29 +40,83 @@ Device::Device(std::string szDeviceName, std::string szLocation)
     mLocation   = szLocation;
     mReachable  = false;
     mEndpointId = 0;
+    mZigbeeEp   = MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX;
+    deviceTypeCount = 0;
 }
-uint8_t Device::GetEndpointClusterIndexesForClusterId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id)
+
+void Device::SetMatterDeviceTypes(m2z_device_params_t* zigbee_node, uint8_t ep_index)
 {
-    zb_uint16_t endpoint_num = zigbee_dev->endpoint, endpoint_idx;
-    zb_uint16_t cluster_num=0, cluster_idx=0;
-    uint8_t cluster_match=0;
-    for(endpoint_idx=0; endpoint_idx <=endpoint_num;endpoint_idx++)
+    uint16_t function_type = DEVICE_TYPE_BRIDGED_NODE;
+
+    deviceTypeCount = 0;
+
+    if (zigbee_node != nullptr && ep_index < zigbee_node->endpoint)
     {
-        cluster_num=zigbee_dev->endpoints[endpoint_idx].num_in_clusters+zigbee_dev->endpoints[endpoint_idx].num_out_clusters;
-        for(cluster_idx=0; cluster_idx <=cluster_num;cluster_idx++)
+        switch (zigbee_node->endpoints[ep_index].device_id)
+        {
+        case 0x0100: // On/Off Light
+            function_type = DEVICE_TYPE_LO_ON_OFF_LIGHT;
+            break;
+        case 0x0101: // Dimmable Light
+            function_type = DEVICE_TYPE_DIMMABLE_LIGHT;
+            break;
+        case 0x0302: // Temperature Sensor
+            function_type = DEVICE_TYPE_TEMP_SENSOR;
+            break;
+        case 0x0000: // On/Off Switch
+        case 0x0103: // On/Off Light Switch
+            // A bridged switch is exposed as a controllable On/Off Light to the controller.
+            function_type = DEVICE_TYPE_LO_ON_OFF_LIGHT;
+            break;
+        default:
+            // Unknown Zigbee device type: report Bridged Node only instead of pretending to be a light.
+            function_type = DEVICE_TYPE_BRIDGED_NODE;
+            break;
+        }
+    }
+
+    deviceTypes[0].deviceTypeId = function_type;
+    deviceTypes[0].deviceTypeRevision = DEVICE_VERSION_DEFAULT;
+    deviceTypeCount             = 1;
+
+    if (function_type != DEVICE_TYPE_BRIDGED_NODE)
+    {
+        deviceTypes[1].deviceTypeId = DEVICE_TYPE_BRIDGED_NODE;
+        deviceTypes[1].deviceTypeRevision = DEVICE_VERSION_DEFAULT;
+        deviceTypeCount             = 2;
+    }
+}
+
+uint8_t Device::GetEndpointClusterIndexesForClusterId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, bool any_endpoint)
+{
+    if (zigbee_dev == nullptr)
+    {
+        return 0;
+    }
+
+    // When this Device is bound to a specific Zigbee endpoint, only that endpoint may match.
+    // Devices used for node level discovery have no Zigbee endpoint set and search every endpoint.
+    bool match_ep = (!any_endpoint && mZigbeeEp != MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX);
+
+    for(zb_uint16_t endpoint_idx = 0; endpoint_idx < zigbee_dev->endpoint; endpoint_idx++)
+    {
+        if (match_ep && zigbee_dev->endpoints[endpoint_idx].ep_id != mZigbeeEp)
+        {
+            continue;
+        }
+
+        zb_uint16_t cluster_num = zigbee_dev->endpoints[endpoint_idx].num_in_clusters + zigbee_dev->endpoints[endpoint_idx].num_out_clusters;
+        for(zb_uint16_t cluster_idx = 0; cluster_idx < cluster_num; cluster_idx++)
         {
             if(zigbee_dev->endpoints[endpoint_idx].ep_cluster[cluster_idx].cluster_id == zcl_cluster_id)
             {
-                cluster_match=1;
                 *ep_id = endpoint_idx;
                 *cluster_id = cluster_idx;
-                break;
+                return 1;
             }
         }
-        if(cluster_match)
-            break;
     }
-    return cluster_match;
+    return 0;
 }
 
 uint8_t Device::NodeReadAttributeIdFromClusterId(m2z_device_params_t * zigbee_node, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer, uint16_t maxReadLength)
@@ -70,7 +124,7 @@ uint8_t Device::NodeReadAttributeIdFromClusterId(m2z_device_params_t * zigbee_no
     zb_uint16_t ep_id, cluster_id, attr_id;
     m2z_device_cluster_attr_t *attribute = NULL;
     
-    if(GetEndpointClusterAttributeIndexesForClusterAttrId(zigbee_node, zcl_cluster_id, zcl_attr_id, &ep_id, &cluster_id, &attr_id))
+    if(GetEndpointClusterAttributeIndexesForClusterAttrId(zigbee_node, zcl_cluster_id, zcl_attr_id, &ep_id, &cluster_id, &attr_id, true))
     {
         attribute = &(zigbee_node->endpoints[ep_id].ep_cluster[cluster_id].attribute[attr_id]);
         memcpy(buffer, &(attribute->attr_value_array), maxReadLength);
@@ -100,7 +154,7 @@ uint8_t Device::readAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl
     {
         dev->mBridgeZigbeeRcpNode->dev_state = BRIDGED_REACHABLE;
     }
-    m2z_schedule_read_attribute(dev->mBridgeZigbeeRcpNode, zcl_cluster_id, zcl_attr_id);
+    m2z_schedule_read_attribute(dev->mBridgeZigbeeRcpNode, dev->mZigbeeEp, zcl_cluster_id, zcl_attr_id);
     if ( dev->mBridgeZigbeeRcpNode->dev_state == BRIDGED_UNAVAILABLE )
     {
         return(-1);
@@ -117,7 +171,7 @@ uint8_t Device::writeAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zc
     {
         dev->mBridgeZigbeeRcpNode->dev_state = BRIDGED_REACHABLE;
     }
-    m2z_schedule_write_attribute(dev->mBridgeZigbeeRcpNode, zcl_cluster_id, zcl_attr_id, buffer);
+    m2z_schedule_write_attribute(dev->mBridgeZigbeeRcpNode, dev->mZigbeeEp, zcl_cluster_id, zcl_attr_id, buffer);
     if ( dev->mBridgeZigbeeRcpNode->dev_state == BRIDGED_UNAVAILABLE )
     {
         return(-1);
@@ -140,7 +194,7 @@ uint8_t Device::sendCommand(Device* dev)
     {
         dev->mBridgeZigbeeRcpNode->dev_state = BRIDGED_REACHABLE;
     }
-    m2z_schedule_send_command(dev->mBridgeZigbeeRcpNode, (uint16_t)dev->pendingCmdClusterId, (uint16_t)dev->pendingCmdCommandId, dev->cmdData, dev->cmdSize);
+    m2z_schedule_send_command(dev->mBridgeZigbeeRcpNode, dev->mZigbeeEp, (uint16_t)dev->pendingCmdClusterId, (uint16_t)dev->pendingCmdCommandId, dev->cmdData, dev->cmdSize);
     if ( dev->mBridgeZigbeeRcpNode->dev_state == BRIDGED_UNAVAILABLE )
     {
         return(-1);
@@ -151,16 +205,16 @@ uint8_t Device::sendCommand(Device* dev)
     }
 }
 
-uint8_t Device::GetEndpointClusterAttributeIndexesForClusterAttrId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, zb_uint16_t* attr_id)
+uint8_t Device::GetEndpointClusterAttributeIndexesForClusterAttrId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, zb_uint16_t* attr_id, bool any_endpoint)
 {
     zb_uint16_t endpoint_idx=0;
     zb_uint16_t cluster_idx=0;
     zb_uint16_t attr_num=0, attr_idx=0;
     uint8_t attribute_match=0;
-    if(GetEndpointClusterIndexesForClusterId(zigbee_dev, zcl_cluster_id, &endpoint_idx, &cluster_idx))
+    if(GetEndpointClusterIndexesForClusterId(zigbee_dev, zcl_cluster_id, &endpoint_idx, &cluster_idx, any_endpoint))
     {
         attr_num=zigbee_dev->endpoints[endpoint_idx].ep_cluster[cluster_idx].num_attrs;
-        for(attr_idx=0; attr_idx <=attr_num;attr_idx++)
+        for(attr_idx=0; attr_idx < attr_num;attr_idx++)
         {
             if(zigbee_dev->endpoints[endpoint_idx].ep_cluster[cluster_idx].attribute[attr_idx].attr_id == zcl_attr_id)
             {
@@ -289,7 +343,7 @@ bool Device::NodeReadAllAttributes(m2z_device_params_t* zigbee_node)
                 attribute = &(cluster->attribute[attr_idx]);
                 if(attribute->attr_state == DISCOVERED_ATTR)
                 {
-                    m2z_schedule_read_attribute(zigbee_node, cluster->cluster_id, attribute->read_req.attr_id);
+                    m2z_schedule_read_attribute(zigbee_node, endpoint->ep_id, cluster->cluster_id, attribute->read_req.attr_id);
                     usleep(COMMAND_COMPLETED_TIME_MS * 400);
                     attr_to_read = true;
                 }

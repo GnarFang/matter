@@ -54,7 +54,8 @@ public:
 private:
     static void* ZigbeeRcpComm_handler(void *context);
 
-    void AddNewZigbeeNode(m2z_device_params_t* zigbee_node);
+    int AddNewZigbeeDevice(m2z_device_params_t* zigbee_node);
+    int AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t ep_index, const std::string & name, const std::string & location);
 
     void RemoveDevice(Device *dev);
     int  start_ZigbeeRcp_comm_thread();

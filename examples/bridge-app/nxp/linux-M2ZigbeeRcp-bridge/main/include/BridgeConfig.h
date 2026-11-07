@@ -63,18 +63,20 @@ namespace {
 //const int16_t initialMeasuredValue = 100;
 
 
-//// Device types for dynamic endpoints: TODO Need a generated file from ZAP to define these!
-//// (taken from matter-devices.xml)
-//#define DEVICE_TYPE_BRIDGED_NODE 0x0013
-//// (taken from lo-devices.xml)
-//#define DEVICE_TYPE_LO_ON_OFF_LIGHT 0x0100
-//// (taken from matter-devices.xml)
-//#define DEVICE_TYPE_POWER_SOURCE 0x0011
-//// (taken from matter-devices.xml)
-//#define DEVICE_TYPE_TEMP_SENSOR 0x0302
+// Device types for dynamic endpoints: TODO Need a generated file from ZAP to define these!
+// (taken from matter-devices.xml)
+#define DEVICE_TYPE_BRIDGED_NODE 0x0013
+// (taken from lo-devices.xml)
+#define DEVICE_TYPE_LO_ON_OFF_LIGHT 0x0100
+// (taken from lo-devices.xml)
+#define DEVICE_TYPE_DIMMABLE_LIGHT 0x0101
+// (taken from matter-devices.xml)
+#define DEVICE_TYPE_POWER_SOURCE 0x0011
+// (taken from matter-devices.xml)
+#define DEVICE_TYPE_TEMP_SENSOR 0x0302
 
-//// Device Version for dynamic endpoints:
-//#define DEVICE_VERSION_DEFAULT 1
+// Device Version for dynamic endpoints:
+#define DEVICE_VERSION_DEFAULT 1
 
 
 

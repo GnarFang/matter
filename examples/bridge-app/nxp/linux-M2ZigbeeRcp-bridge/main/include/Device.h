@@ -75,6 +75,7 @@ public:
     inline std::string GetEndpointDeviceId() { return mEpDeviceId; };
     inline void SetZone(std::string zone) { mZone = zone; };
     void DiscoverNode(m2z_device_params_t* zigbee_node);
+    void SetMatterDeviceTypes(m2z_device_params_t* zigbee_node, uint8_t ep_index);
     bool HasCluster(uint16_t zcl_cluster_id);
     ClusterId GetMatterClusterId(uint16_t zcl_cluster_id);
     uint8_t NodeReadAttributeIdFromClusterId(m2z_device_params_t * zigbee_node, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer, uint16_t maxReadLength);
@@ -82,15 +83,20 @@ public:
     uint8_t writeAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer);
     uint8_t canWriteAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, Protocols::InteractionModel::Status * zcl_attr_status);
     uint8_t sendCommand(Device* dev);
-    uint8_t GetEndpointClusterIndexesForClusterId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id);
-    uint8_t GetEndpointClusterAttributeIndexesForClusterAttrId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, zb_uint16_t* attr_id);
+    uint8_t GetEndpointClusterIndexesForClusterId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, bool any_endpoint = false);
+    uint8_t GetEndpointClusterAttributeIndexesForClusterAttrId(m2z_device_params_t * zigbee_dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, zb_uint16_t* ep_id, zb_uint16_t* cluster_id, zb_uint16_t* attr_id, bool any_endpoint = false);
     /* Zigbee devices info */
     inline void SetZigbeeRcp(m2z_device_params_t * dev) { mBridgeZigbeeRcpNode = dev; };
     inline int GetZigbeeRcpSaddr() { return mBridgeZigbeeRcpNode->short_addr; };
     inline m2z_device_params_t* GetZigbeeRcp() { return mBridgeZigbeeRcpNode; };
+    inline void SetZigbeeEp(zb_uint16_t ep_id) { mZigbeeEp = ep_id; };
+    inline zb_uint16_t GetZigbeeEp() { return mZigbeeEp; };
+    inline uint8_t GetDeviceTypeCount() { return deviceTypeCount; };
+    inline void SetEndpointClustersCount(int count) { ep_clusters_count = count; };
 
     EmberAfEndpointType endpointType;
-    EmberAfDeviceType deviceTypes;
+    EmberAfDeviceType deviceTypes[2];
+    uint8_t deviceTypeCount;
     EmberAfCluster clusterList[MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP];
     DataVersion dataVersions[MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP];
     bool dev_pending_command;
@@ -124,6 +130,7 @@ protected:
     std::string mEpDeviceId;
     chip::EndpointId mEndpointId;
     chip::EndpointId mParentEndpointId;
+    zb_uint16_t mZigbeeEp;
     int ep_clusters_count;
     std::string mZone;
     int mMatterIndex;
