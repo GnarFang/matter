@@ -212,8 +212,10 @@ void m2z_schedule_request_close_network()
       zb_buf_get_out_delayed_ext(m2z_request_close_network, 0, 0);
 }
 
-void m2z_request_bdb_start_commissioning(zb_bufid_t param)
+void m2z_request_bdb_start_commissioning(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param: %d", __FUNCTION__, param);
 
   bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
@@ -221,28 +223,36 @@ void m2z_request_bdb_start_commissioning(zb_bufid_t param)
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
 
-void m2z_request_open_network(zb_bufid_t param)
+void m2z_request_open_network(zb_cb_param_t cb_param)
 {
-  zb_nlme_permit_joining_request_t *req;
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_zdo_mgmt_permit_joining_req_param_t *req;
 
   syslog(LOG_DEBUG, ">> %s param: %d", __FUNCTION__, param);
 
-  req = zb_buf_initial_alloc(param, sizeof(zb_nlme_permit_joining_request_t));
+  req = ZB_BUF_GET_PARAM(param, zb_zdo_mgmt_permit_joining_req_param_t);
+  ZB_BZERO(req, sizeof(zb_zdo_mgmt_permit_joining_req_param_t));
+  req->dest_addr = zb_get_short_address();
   req->permit_duration = 180;
-  zb_nlme_permit_joining_request(param);
+  req->tc_significance = 1;
+  zb_zdo_mgmt_permit_joining_req(param, NULL);
 
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
 
-void m2z_request_close_network(zb_bufid_t param)
+void m2z_request_close_network(zb_cb_param_t cb_param)
 {
-  zb_nlme_permit_joining_request_t *req;
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_zdo_mgmt_permit_joining_req_param_t *req;
 
   syslog(LOG_DEBUG, ">> %s param: %d", __FUNCTION__, param);
 
-  req = zb_buf_initial_alloc(param, sizeof(zb_nlme_permit_joining_request_t));
+  req = ZB_BUF_GET_PARAM(param, zb_zdo_mgmt_permit_joining_req_param_t);
+  ZB_BZERO(req, sizeof(zb_zdo_mgmt_permit_joining_req_param_t));
+  req->dest_addr = zb_get_short_address();
   req->permit_duration = 0;
-  zb_nlme_permit_joining_request(param);
+  req->tc_significance = 1;
+  zb_zdo_mgmt_permit_joining_req(param, NULL);
 
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
@@ -327,8 +337,9 @@ int m2z_register_message_callback(m2z_callback_t callback_function)
 }
 
 /* Callback which will be called on incoming ZCL packet. */
-zb_uint8_t zcl_specific_cluster_cmd_handler(zb_uint8_t param)
+zb_uint8_t zcl_specific_cluster_cmd_handler(zb_cb_param_t cb_param)
 {
+    zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
     zb_bufid_t zcl_cmd_buf = param;
     zb_zcl_parsed_hdr_t *cmd_info = ZB_BUF_GET_PARAM(zcl_cmd_buf, zb_zcl_parsed_hdr_t);
     zb_uint8_t cmd_processed = 0;
@@ -547,8 +558,9 @@ zb_uint8_t zcl_specific_cluster_cmd_handler(zb_uint8_t param)
 }
 
 /* Callback which will be called on startup procedure complete (successful or not). */
-void zboss_signal_handler(zb_uint8_t param)
+void zboss_signal_handler(zb_cb_param_t cb_param)
 {
+    zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
     zb_zdo_app_signal_hdr_t * p_sg_p = NULL;
     zb_zdo_signal_leave_params_t * p_leave_params = NULL;
     zb_zdo_app_signal_type_t sig = zb_get_app_signal(param, &p_sg_p);
@@ -587,6 +599,11 @@ void zboss_signal_handler(zb_uint8_t param)
         syslog(LOG_INFO, "%s: signal %02u -> ZB_BDB_SIGNAL_DEVICE_FIRST_START", __FUNCTION__, sig);
       case ZB_BDB_SIGNAL_DEVICE_REBOOT:
         syslog(LOG_INFO, "%s: signal %02u -> ZB_BDB_SIGNAL_DEVICE_REBOOT", __FUNCTION__, sig);
+        /* Form the network (coordinator) and open for steering, matching
+         * nxp_zboss_libs_sdk/examples/simple_gw/simple_gw.c. Without this the
+         * BDB stays stuck at DEVICE_FIRST_START because the asynchronous
+         * PermitJoin action races ahead of the first-start signal. */
+        bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
         break;
 
       case ZB_BDB_SIGNAL_STEERING:
@@ -730,8 +747,11 @@ void m2z_request_active_ep_leave(zb_bufid_t param, zb_uint16_t short_addr, zb_bo
 /* [address_by_short] */
 
 
-void m2z_leave_and_rejoin_device(zb_uint8_t param, zb_uint16_t short_addr)
+void m2z_leave_and_rejoin_device(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t short_addr = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param %hd short_addr %d",__FUNCTION__, param, short_addr);
 
   if (!param)
@@ -747,12 +767,12 @@ void m2z_leave_and_rejoin_device(zb_uint8_t param, zb_uint16_t short_addr)
 }
 
 
-void m2z_remove_and_rejoin_device_delayed(zb_uint8_t idx)
+void m2z_remove_and_rejoin_device_delayed(zb_cb_param_t idx)
 {
   syslog(LOG_DEBUG, "%s: short_addr 0x%x",__FUNCTION__,  g_device_ctx.devices[idx].short_addr);
 
   zb_buf_get_out_delayed_ext(m2z_leave_and_rejoin_device, g_device_ctx.devices[idx].short_addr, 0);
-  m2z_remove_device(idx);
+  m2z_remove_device((zb_uint8_t)idx);
 }
 
 /* Callback which will be called on Device Associated packet. */
@@ -859,8 +879,9 @@ void m2z_callback_dev_unavailable(zb_zdo_device_unavailable_params_t *dev_unavai
     syslog(LOG_DEBUG, "<<  %s ", __FUNCTION__);
 }
 
-void m2z_callback_dev_ieee_addr(zb_uint8_t param)
+void m2z_callback_dev_ieee_addr(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
   zb_bufid_t buf = param;
   zb_zdo_nwk_addr_resp_head_t *resp;
   zb_ieee_addr_t ieee_addr;
@@ -901,17 +922,19 @@ void m2z_callback_dev_ieee_addr(zb_uint8_t param)
   syslog(LOG_DEBUG, "<< %s", __FUNCTION__);
 }
 
-void m2z_schedule_request_ieee_addr(zb_uint16_t dev_idx) {
-    zb_buf_get_out_delayed_ext(m2z_request_ieee_addr, dev_idx, 0);
+void m2z_schedule_request_ieee_addr(zb_cb_param_t dev_idx) {
+    zb_buf_get_out_delayed_ext(m2z_request_ieee_addr, (zb_uint16_t)dev_idx, 0);
 }
-void m2z_request_ieee_addr(zb_bufid_t param, zb_uint16_t dev_idx)
+void m2z_request_ieee_addr(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_idx = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
   zb_bufid_t  buf = param;
   zb_zdo_ieee_addr_req_param_t *req_param;
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_idx);
 
   if (!param){
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_ieee_addr, dev_idx, 0);
+    zb_buf_get_out_delayed_ext(m2z_request_ieee_addr, dev_idx, 0);
   }else
   {
     if (dev_idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
@@ -1019,7 +1042,7 @@ void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_i
     g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].read_req.attr_id = attr_id;
     
     g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].attr_state = SCHEDULED_VALUE_READ_ATTR;
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_read_attribute, dev_idx, 0);
+    zb_buf_get_out_delayed_ext(m2z_request_read_attribute, dev_idx, 0);
 }
 
 void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t * p_attr_value)
@@ -1044,7 +1067,7 @@ void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_
     g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].write_req.attr_type = g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].attr_type;
     ZB_MEMCPY(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].write_req.write_value, p_attr_value,sizeof(zb_uint8_t));
     g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].attribute[attr_idx].pending_write = true;
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_write_attribute, dev_idx, 0);
+    zb_buf_get_out_delayed_ext(m2z_request_write_attribute, dev_idx, 0);
 }
 
 void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size)
@@ -1064,7 +1087,7 @@ void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id,
     g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].command_req.cmd_size = cmd_size;
     memcpy(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].command_req.cmd_data, cmd_data, cmd_size);
     
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_send_command, dev_idx, 0);
+    zb_buf_get_out_delayed_ext(m2z_request_send_command, dev_idx, 0);
     while(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command)
     {
         usleep(100);
@@ -1075,8 +1098,11 @@ void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id,
 }
 
 /* Send_read_attribute_req */
-void m2z_request_read_attribute(zb_bufid_t param, zb_uint16_t dev_index)
+void m2z_request_read_attribute(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_index = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_index);
     
     m2z_device_ep_t *endpoint = NULL;
@@ -1114,8 +1140,11 @@ void m2z_request_read_attribute(zb_bufid_t param, zb_uint16_t dev_index)
   syslog(LOG_DEBUG, "<< %s param %hd dev_idx %hd", __FUNCTION__, param, dev_index);
 }
 
-void m2z_request_write_attribute(zb_bufid_t param, zb_uint16_t dev_index)
+void m2z_request_write_attribute(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_index = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_index);
     
     m2z_device_ep_t *endpoint = NULL;
@@ -1166,8 +1195,11 @@ void m2z_get_attribute_zb_status(m2z_device_params_t *dev, zb_uint16_t cluster_i
     
 }
 
-void m2z_request_send_command(zb_bufid_t param, zb_uint16_t dev_index)
+void m2z_request_send_command(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_index = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_index);
     
     m2z_device_ep_t *endpoint = NULL;
@@ -1204,13 +1236,14 @@ void m2z_request_send_command(zb_bufid_t param, zb_uint16_t dev_index)
     return;
 }
 
-void m2z_schedule_request_attr_disc(zb_uint16_t dev_idx)
+void m2z_schedule_request_attr_disc(zb_cb_param_t dev_idx)
 {
-  zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_attr_disc, dev_idx, 0);
+  zb_buf_get_out_delayed_ext(m2z_request_attr_disc, (zb_uint16_t)dev_idx, 0);
 }
 
-void m2z_callback_dev_attr_disc(zb_uint8_t param)
+void m2z_callback_dev_attr_disc(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
   zb_zcl_command_send_status_t *cmd_send_status = ZB_BUF_GET_PARAM(param, zb_zcl_command_send_status_t);
   zb_uint16_t dev_idx = MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX;
 
@@ -1223,7 +1256,7 @@ void m2z_callback_dev_attr_disc(zb_uint8_t param)
 
   if (dev_idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
   {
-    ZB_SCHEDULE_APP_ALARM((zb_callback_t)m2z_schedule_request_attr_disc, (uint8_t)dev_idx, 0.1 * ZB_TIME_ONE_SECOND);
+    ZB_SCHEDULE_APP_ALARM(m2z_schedule_request_attr_disc, (uint8_t)dev_idx, 0.1 * ZB_TIME_ONE_SECOND);
   }
 
   zb_buf_free(param);
@@ -1231,8 +1264,10 @@ void m2z_callback_dev_attr_disc(zb_uint8_t param)
   syslog(LOG_DEBUG, "<< %s", __FUNCTION__);
 }
 
-void m2z_request_attr_disc(zb_bufid_t param, zb_uint16_t dev_idx)
+void m2z_request_attr_disc(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_idx = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
   zb_uint16_t ep_idx;
   zb_uint16_t ep_cluster_idx;
   zb_bool_t found_cluster_ep = 0;
@@ -1520,8 +1555,9 @@ void m2z_update_endpoint_supported_clusters(m2z_device_params_t *device, uint16_
     }
 }
 
-void m2z_callback_dev_simple_desc(zb_bufid_t param)
+void m2z_callback_dev_simple_desc(zb_cb_param_t cb_param)
 {
+    zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
     zb_uint8_t *zdp_cmd = zb_buf_begin(param);
     zb_zdo_simple_desc_resp_t *resp = (zb_zdo_simple_desc_resp_t*)(zdp_cmd);
     zb_uint_t i;
@@ -1586,8 +1622,10 @@ void m2z_callback_dev_simple_desc(zb_bufid_t param)
 }
 
 /* Send_simple_desc_req */
-void m2z_request_simple_desc(zb_bufid_t param, zb_uint16_t dev_idx)
+void m2z_request_simple_desc(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_idx = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
   zb_zdo_simple_desc_req_t *req;
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_idx);
 
@@ -1617,13 +1655,14 @@ void m2z_request_simple_desc(zb_bufid_t param, zb_uint16_t dev_idx)
   syslog(LOG_DEBUG, "<< %s param %hd dev_idx %hd", __FUNCTION__, param, dev_idx);
 }
 
-void m2z_schedule_request_simple_desc(zb_uint16_t dev_idx) {
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_simple_desc, dev_idx, 0);
+void m2z_schedule_request_simple_desc(zb_cb_param_t dev_idx) {
+    zb_buf_get_out_delayed_ext(m2z_request_simple_desc, (zb_uint16_t)dev_idx, 0);
 }
 
 /* active_ep_req callback */
-void m2z_callback_dev_active_ep(zb_bufid_t param)
+void m2z_callback_dev_active_ep(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
   zb_uint8_t *zdp_cmd = zb_buf_begin(param);
   zb_zdo_ep_resp_t *resp = (zb_zdo_ep_resp_t*)zdp_cmd;
   zb_uint8_t *ep_list = zdp_cmd + sizeof(zb_zdo_ep_resp_t);
@@ -1669,8 +1708,11 @@ void m2z_callback_dev_active_ep(zb_bufid_t param)
 }
 
 /* Send active_ep_req */
-void m2z_request_active_ep(zb_bufid_t param, zb_uint16_t dev_idx)
+void m2z_request_active_ep(zb_cb_param_t cb_param)
 {
+  zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+  zb_uint16_t dev_idx = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
   syslog(LOG_DEBUG, ">> %s param %hd dev_idx %hd", __FUNCTION__, param, dev_idx);
   if (!param)
   {
@@ -1687,8 +1729,8 @@ void m2z_request_active_ep(zb_bufid_t param, zb_uint16_t dev_idx)
   syslog(LOG_DEBUG, "<< %s param %hd dev_idx %hd", __FUNCTION__, param, dev_idx);
 }
 
-void m2z_schedule_request_active_ep(zb_uint16_t dev_idx) {
-    zb_buf_get_out_delayed_ext((zb_callback2_t)m2z_request_active_ep, dev_idx, 0);
+void m2z_schedule_request_active_ep(zb_cb_param_t dev_idx) {
+    zb_buf_get_out_delayed_ext(m2z_request_active_ep, (zb_uint16_t)dev_idx, 0);
 }
 
 /* Callback which will be called on incoming nwk Leave packet. */

@@ -256,34 +256,33 @@ int m2z_register_message_callback(m2z_callback_t callback_function);
 void m2z_schedule_request_bdb_start_commissioning();
 void m2z_schedule_request_open_network();
 void m2z_schedule_request_close_network();
-void m2z_request_bdb_start_commissioning(zb_bufid_t param);
-void m2z_request_open_network(zb_bufid_t param);
-void m2z_request_close_network(zb_bufid_t param);
+void m2z_request_bdb_start_commissioning(zb_cb_param_t param);
+void m2z_request_open_network(zb_cb_param_t param);
+void m2z_request_close_network(zb_cb_param_t param);
 
+void m2z_request_ieee_addr(zb_cb_param_t param);
+void m2z_request_attr_disc(zb_cb_param_t param);
+void m2z_request_simple_desc(zb_cb_param_t param);
+void m2z_request_active_ep(zb_cb_param_t param);
 
-void m2z_request_ieee_addr(zb_bufid_t param, zb_uint16_t dev_idx);
-void m2z_request_attr_disc(zb_bufid_t param, zb_uint16_t dev_idx);
-void m2z_request_simple_desc(zb_bufid_t param, zb_uint16_t dev_idx);
-void m2z_request_active_ep(zb_bufid_t param, zb_uint16_t dev_idx);
-
-void m2z_schedule_request_ieee_addr(zb_uint16_t dev_idx);
-void m2z_schedule_request_attr_disc(zb_uint16_t dev_idx);
-void m2z_schedule_request_simple_desc(zb_uint16_t dev_idx);
-void m2z_schedule_request_active_ep(zb_uint16_t dev_idx);
+void m2z_schedule_request_ieee_addr(zb_cb_param_t dev_idx);
+void m2z_schedule_request_attr_disc(zb_cb_param_t dev_idx);
+void m2z_schedule_request_simple_desc(zb_cb_param_t dev_idx);
+void m2z_schedule_request_active_ep(zb_cb_param_t dev_idx);
 void m2z_schedule_read_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id);
 void m2z_schedule_write_attribute(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t* p_attr_value);
 void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t cmd_id, zb_uint8_t *cmd_data, zb_uint8_t cmd_size);
-void m2z_request_send_command(zb_bufid_t param, zb_uint16_t dev_index);
-void m2z_request_read_attribute(zb_bufid_t param, zb_uint16_t dev_index);
-void m2z_request_write_attribute(zb_bufid_t param, zb_uint16_t dev_index);
+void m2z_request_send_command(zb_cb_param_t param);
+void m2z_request_read_attribute(zb_cb_param_t param);
+void m2z_request_write_attribute(zb_cb_param_t param);
 
 void m2z_get_attribute_zb_status(m2z_device_params_t *dev, zb_uint16_t cluster_id, zb_uint16_t attr_id, zb_uint8_t *attr_zb_status);
 
 void m2z_handler_disc_attr_resp(zb_bufid_t param, zb_zcl_parsed_hdr_t *cmd_info);
-void m2z_callback_dev_attr_disc(zb_uint8_t param);
-void m2z_callback_dev_simple_desc(zb_bufid_t param);
-void m2z_callback_dev_active_ep(zb_bufid_t param);
-void m2z_callback_dev_ieee_addr(zb_uint8_t param);
+void m2z_callback_dev_attr_disc(zb_cb_param_t param);
+void m2z_callback_dev_simple_desc(zb_cb_param_t param);
+void m2z_callback_dev_active_ep(zb_cb_param_t param);
+void m2z_callback_dev_ieee_addr(zb_cb_param_t param);
 void m2z_update_endpoint_supported_clusters(m2z_device_params_t *device, uint16_t zcl_cluster_id);
 
 /* Startup sequence routines */
@@ -317,7 +316,7 @@ zb_uint16_t m2z_dev_get_ep_id_by_short_addr_and_cluster_id(zb_uint16_t short_add
 zb_uint16_t m2z_dev_get_cluster_idx_by_short_addr_and_ep_id_and_cluster_id(zb_uint16_t short_addr, zb_uint16_t ep_id, zb_uint16_t cluster_id);
 zb_uint16_t m2z_dev_get_attr_idx_by_short_addr_and_ep_id_and_cluster_id(zb_uint16_t short_addr, zb_uint16_t ep_id, zb_uint16_t cluster_id, zb_uint16_t attr_id);
 
-void m2z_remove_and_rejoin_device_delayed(zb_uint8_t idx);
+void m2z_remove_and_rejoin_device_delayed(zb_cb_param_t idx);
 void m2z_remove_device_delayed(zb_uint8_t idx);
 void m2z_callback_dev_unavailable(zb_zdo_device_unavailable_params_t *);
 
@@ -327,7 +326,7 @@ void m2z_nvram_read_app_data(zb_uint8_t page, zb_uint32_t pos, zb_uint16_t paylo
 zb_ret_t m2z_nvram_write_app_data(zb_uint8_t page, zb_uint32_t pos);
 
 /* Handler for specific zcl commands */
-zb_uint8_t zcl_specific_cluster_cmd_handler(zb_uint8_t param);
+zb_uint8_t zcl_specific_cluster_cmd_handler(zb_cb_param_t param);
 
 
 /* Macros used in test loop */

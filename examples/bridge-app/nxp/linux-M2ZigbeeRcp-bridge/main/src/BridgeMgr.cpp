@@ -1005,6 +1005,60 @@ void BridgeDevMgr::HandleZigbeeDeviceStatusChanged(Device * dev, Device::Changed
     }
 }
 
+// Static endpoints (e.g. the dummy endpoint 2) defer every attribute to external
+// storage, but there is no dynamic Device backing them. Code-driven clusters read
+// mandatory attributes (FeatureMap, SceneTableSize, Tolerance, ...) during
+// initialization through the external attribute read path and VerifyOrDie when the
+// read fails. For those endpoints, return the attribute's default value so the
+// reads succeed. This mirrors emAfApplyDefaults() in src/app/util/attribute-storage.cpp.
+static Protocols::InteractionModel::Status ReadStaticAttributeDefault(const EmberAfAttributeMetadata * attributeMetadata,
+                                                                      uint8_t * buffer)
+{
+    const uint8_t * defaultValue                   = nullptr;
+    size_t defaultValueSizeForBigEndianNudger      = 0;
+
+    if (attributeMetadata->HasMinMax())
+    {
+        if (attributeMetadata->size <= 2)
+        {
+            defaultValue = reinterpret_cast<const uint8_t *>(
+                &(attributeMetadata->defaultValue.ptrToMinMaxValue->defaultValue.defaultValue));
+            defaultValueSizeForBigEndianNudger =
+                sizeof(attributeMetadata->defaultValue.ptrToMinMaxValue->defaultValue.defaultValue);
+        }
+        else
+        {
+            defaultValue = attributeMetadata->defaultValue.ptrToMinMaxValue->defaultValue.ptrToDefaultValue;
+        }
+    }
+    else if ((attributeMetadata->size <= 4) && !emberAfIsStringAttributeType(attributeMetadata->attributeType))
+    {
+        defaultValue                      = reinterpret_cast<const uint8_t *>(&(attributeMetadata->defaultValue.defaultValue));
+        defaultValueSizeForBigEndianNudger = sizeof(attributeMetadata->defaultValue.defaultValue);
+    }
+    else
+    {
+        defaultValue = attributeMetadata->defaultValue.ptrToDefaultValue;
+    }
+
+    if (defaultValue == nullptr)
+    {
+        memset(buffer, 0, attributeMetadata->size);
+    }
+    else
+    {
+#if CHIP_CONFIG_BIG_ENDIAN_TARGET
+        if (attributeMetadata->size < defaultValueSizeForBigEndianNudger)
+        {
+            defaultValue += (defaultValueSizeForBigEndianNudger - attributeMetadata->size);
+        }
+#endif // CHIP_CONFIG_BIG_ENDIAN_TARGET
+        memcpy(buffer, defaultValue, attributeMetadata->size);
+    }
+
+    return Protocols::InteractionModel::Status::Success;
+}
+
 Protocols::InteractionModel::Status emberAfExternalAttributeReadCallback(EndpointId endpoint, ClusterId clusterId,
                                                    const EmberAfAttributeMetadata * attributeMetadata, uint8_t * buffer,
                                                    uint16_t maxReadLength)
@@ -1024,6 +1078,12 @@ Protocols::InteractionModel::Status emberAfExternalAttributeReadCallback(Endpoin
         {
             ret = gDevMgr->HandleReadAttribute(dev, clusterId, attributeMetadata->attributeId, buffer, maxReadLength);
         }
+    }
+    else
+    {
+        // Not backed by a dynamic Device (a static endpoint). Serve the default
+        // value so code-driven cluster initialization on static endpoints succeeds.
+        ret = ReadStaticAttributeDefault(attributeMetadata, buffer);
     }
 
     return ret;

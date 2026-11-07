@@ -162,10 +162,13 @@ int main(int argc, char * argv[])
 #endif
 
     initParams.interfaceId = LinuxDeviceOptions::GetInstance().interfaceId;
-    chip::Server::GetInstance().Init(initParams);
 
-    // Initialize device attestation config
+    // Initialize device attestation config. This must be set before server init,
+    // because the Operational Credentials cluster snapshots the provider during
+    // cluster construction.
     SetDeviceAttestationCredentialsProvider(Examples::GetExampleDACProvider());
+
+    chip::Server::GetInstance().Init(initParams);
 
     // Disable last fixed endpoint, which is used as a placeholder for all of the
     // supported clusters so that ZAP will generated the requisite code.
