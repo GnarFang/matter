@@ -18,23 +18,15 @@
 
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <functional>
+#include <vector>
 #include <app/util/attribute-storage.h>
 #include <app/util/attribute-metadata.h> // EmberAfAttributeMetadata
 
-#include <stdbool.h>
-#include <stdint.h>
-
-#include <functional>
-#include <vector>
-
 #include "BridgeConfig.h"
-//#include "newDb.h"
-#define USE_EXTERN_C
-#ifdef USE_EXTERN_C
-extern "C"{
-    #include "ZigbeeRcpImpl.h"
-}
-#endif
+#include "ZigbeeRcpImpl.h"
 #include "ZigbeeRcpMessage.h"
 
 class Device

@@ -1,6 +1,13 @@
 #ifndef MATTER_ZIGBEERCP_BRIDGE_H
 #define MATTER_ZIGBEERCP_BRIDGE_H 1
 
+/* The implementation lives in ZigbeeRcpImpl.c, so every declaration below must have C linkage.
+ * The guard has to be here (and cover the ZBOSS headers too) so that no includer has to wrap
+ * this header in extern "C" itself. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "ZigbeeRcpImplDevice.h"
 #include "zboss_api.h"
 #include "zb_led_button.h"
@@ -38,6 +45,12 @@
 // maximum time in ms to wait for the Zigbee command ack before giving up (prevents blocking the
 // Matter main loop forever if the RCP never answers)
 #define SEND_COMMAND_ACK_TIMEOUT_MS (500)
+
+/* Device persistence (bridged device list + stable Matter endpoint ids) is
+ * optional and enabled with the --persist command line argument. When it is
+ * not enabled every start begins with an empty device list. */
+extern zb_bool_t m2z_persist_enabled;
+void m2z_set_persist_enabled(zb_bool_t enabled);
 
 /* Device states enumeration */
 enum m2z_device_state_e
@@ -251,7 +264,44 @@ typedef ZB_PACKED_PRE struct m2z_device_ctx_s
 /* Declare type for persisting into nvram context */
 typedef m2z_device_ctx_t m2z_device_nvram_dataset_t;
 
+/* Compact record of a bridged Zigbee device, persisted across reboots.
+ * The full g_device_ctx is far too large for NVRAM (255 * ~1.5MB), so only the
+ * information needed to recreate the Matter endpoint structure is stored. */
+#define M2Z_STORE_MAGIC   0x4D325A44u /* "M2ZD" */
+#define M2Z_STORE_VERSION 1
+
+typedef struct ZB_PACKED_STRUCT m2z_stored_ep_s
+{
+    zb_uint16_t ep_id;
+    zb_uint16_t profile_id;
+    zb_uint16_t device_id;
+    zb_uint16_t matter_ep_id; /* Matter endpoint assigned to this Zigbee endpoint (0xffff = none) */
+    zb_uint8_t  num_in_clusters;
+    zb_uint8_t  num_out_clusters;
+    char        name[33];
+    zb_uint16_t in_clusters[MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP];
+} m2z_stored_ep_t;
+
+typedef struct ZB_PACKED_STRUCT m2z_stored_device_s
+{
+    zb_ieee_addr_t  ieee_addr;
+    zb_uint16_t     short_addr;
+    zb_uint8_t      ep_count;
+    zb_uint8_t      reserved;
+    char            location[17];
+    m2z_stored_ep_t eps[MATTER_ZIGBEERCP_BRIDGE_MAX_EP_PER_DEV];
+} m2z_stored_device_t;
+
 typedef void (* m2z_callback_t)(int MsgType, m2z_device_params_t* ZigbeeRcp_dev, void* data);
+
+/* Restore one persisted device into the Zigbee device table.
+ * Returns the device index, or MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX. */
+zb_uint16_t m2z_store_restore_device(const m2z_stored_device_t * rec);
+m2z_device_params_t * m2z_get_device_params(zb_uint16_t dev_idx);
+/* Refresh the short addresses of devices restored from the store, using the
+ * address map that ZBOSS restored from its own NVRAM. */
+void m2z_store_refresh_restored_devices(void);
+void m2z_store_probe_restored_devices(void);
 
 void m2z_impl_init();
 int m2z_impl_start_threads();
@@ -334,5 +384,9 @@ zb_uint8_t zcl_specific_cluster_cmd_handler(zb_cb_param_t param);
 
 
 /* Macros used in test loop */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* MATTER_ZIGBEERCP_BRIDGE_H */

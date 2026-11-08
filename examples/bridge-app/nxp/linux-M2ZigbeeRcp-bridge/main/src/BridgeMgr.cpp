@@ -35,14 +35,10 @@
 #include "Bridge.h"
 #include <syslog.h>
 #include <stdio.h>
+#include <cstring>
+#include <memory>
 
-
-#define USE_EXTERN_C
-#ifdef USE_EXTERN_C
-extern "C"{
-    #include "ZigbeeRcpImpl.h"
-}
-#endif
+#include "ZigbeeRcpImpl.h"
 #include "ZigbeeRcpMessage.h"
 #include <zap-generated/endpoint_config.h>
 #ifdef GENERATED_FUNCTION_ARRAYS
@@ -117,7 +113,6 @@ public:
             syslog(LOG_INFO, "%s: mEndpointId=%d endpointIndex=%d mClusterId=0x%x mCommandId=0x%x\n", __FUNCTION__,
                             commandPath.mEndpointId ,endpointIndex ,commandPath.mClusterId ,commandPath.mCommandId);
             Device * dev = BridgeDevMgr::gDevices[endpointIndex];
-            BridgeDevMgr *gDevMgr = new BridgeDevMgr;
 
             dev->dev_pending_command = true;
             dev->pendingCmdEndpointId = commandPath.mEndpointId;
@@ -136,22 +131,48 @@ public:
 
             switch (commandPath.mClusterId)
             {
+                case chip::app::Clusters::OnOff::Id:
+                {
+                    // On/Off/Toggle are relayed 1:1 to the Zigbee OnOff cluster: the ZCL
+                    // frame carries no payload, the command id is enough.
+                    switch (commandPath.mCommandId)
+                    {
+                        case chip::app::Clusters::OnOff::Commands::On::Id:
+                        case chip::app::Clusters::OnOff::Commands::Off::Id:
+                        case chip::app::Clusters::OnOff::Commands::Toggle::Id:
+                            break;
+                        default:
+                            syslog(LOG_WARNING, "%s: unsupported OnOff command 0x%02x", __FUNCTION__, commandPath.mCommandId);
+                            return CHIP_ERROR_NOT_IMPLEMENTED;
+                    }
+                    break;
+                }
                 case chip::app::Clusters::LevelControl::Id:
                 {
                     switch (commandPath.mCommandId)
                     {
                         case chip::app::Clusters::LevelControl::Commands::MoveToLevel::Id:
+                        case chip::app::Clusters::LevelControl::Commands::MoveToLevelWithOnOff::Id:
                         {
                             chip::app::Clusters::LevelControl::Commands::MoveToLevel::DecodableType commandData;
-                            DataModel::Decode(DataReader, commandData);
+                            CHIP_ERROR decodeErr = DataModel::Decode(DataReader, commandData);
+                            if (decodeErr != CHIP_NO_ERROR)
+                            {
+                                syslog(LOG_ERR, "%s: cannot decode MoveToLevel: %s", __FUNCTION__, decodeErr.AsString());
+                                return CHIP_ERROR_INVALID_ARGUMENT;
+                            }
+                            const uint16_t transitionTime =
+                                commandData.transitionTime.IsNull() ? 0 : commandData.transitionTime.Value();
                             dev->cmdData[dev->cmdSize++] = commandData.level;
-                            dev->cmdData[dev->cmdSize++] = (uint8_t)(commandData.transitionTime.Value() >> 0) & 0xff;
-                            dev->cmdData[dev->cmdSize++] = (uint8_t)(commandData.transitionTime.Value() >> 8) & 0xff;
-                            dev->cmdData[dev->cmdSize++] = (commandData.optionsMask.Raw() >> 0) & 0xff;
-                            dev->cmdData[dev->cmdSize++] = (commandData.optionsOverride.Raw() >> 0) & 0xff;
-                            
+                            dev->cmdData[dev->cmdSize++] = (uint8_t)(transitionTime & 0xff);
+                            dev->cmdData[dev->cmdSize++] = (uint8_t)((transitionTime >> 8) & 0xff);
+                            dev->cmdData[dev->cmdSize++] = (uint8_t)(commandData.optionsMask.Raw() & 0xff);
+                            dev->cmdData[dev->cmdSize++] = (uint8_t)(commandData.optionsOverride.Raw() & 0xff);
                             break;
                         }
+                        default:
+                            syslog(LOG_WARNING, "%s: unsupported LevelControl command 0x%02x", __FUNCTION__, commandPath.mCommandId);
+                            return CHIP_ERROR_NOT_IMPLEMENTED;
                     }
                     break;
                 }
@@ -176,7 +197,7 @@ public:
             }
             if (dev->IsReachable())
             {
-                ret = gDevMgr->HandleSendCommand(static_cast<Device *>(dev));
+                ret = BridgeDevMgr::HandleSendCommand(static_cast<Device *>(dev));
             }
             if(ret != Protocols::InteractionModel::Status::Success)
             {
@@ -186,80 +207,6 @@ public:
             }
             syslog(LOG_INFO, "%s: Command successfully processed: mEndpointId=%d endpointIndex=%d clusterId=0x%x commandId=0x%x\n", __FUNCTION__,
                         dev->pendingCmdEndpointId ,commandPath.mEndpointId ,dev->pendingCmdClusterId ,dev->pendingCmdCommandId);
-            //if the Cluster is OnOff, we need a workarround on the LevelControl cluster if the device has this cluster
-            //end the command to move to level = 0 in case of "Off" cmd
-            //send the command to move to level = 254 in case of "On" cmd
-            switch (commandPath.mClusterId)
-            {
-                case chip::app::Clusters::OnOff::Id:
-                {
-                    zb_uint16_t endpoint_idx=0;
-                    zb_uint16_t cluster_idx=0;
-
-                    if(dev->GetEndpointClusterIndexesForClusterId(dev->GetZigbeeRcp(), chip::app::Clusters::LevelControl::Id, &endpoint_idx, &cluster_idx))
-                    {
-                        dev->cmdSize = 0;
-                        dev->pendingCmdEndpointId = commandPath.mEndpointId;
-                        dev->pendingCmdClusterId = chip::app::Clusters::LevelControl::Id;
-                        dev->pendingCmdCommandId = chip::app::Clusters::LevelControl::Commands::MoveToLevel::Id;
-                        switch (commandPath.mCommandId)
-                        {
-                            case chip::app::Clusters::OnOff::Commands::On::Id:
-                            {
-                                dev->cmdData[dev->cmdSize++] = 254;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                break;
-                            }
-                            case chip::app::Clusters::OnOff::Commands::Off::Id:
-                            {
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                break;
-                            }
-                            case chip::app::Clusters::OnOff::Commands::Toggle::Id:
-                            {
-                                // Uggly workarround: get the current level to toggle it !
-                                uint8_t currentLevel = 0;
-                                ret = gDevMgr->HandleReadAttribute(dev, chip::app::Clusters::LevelControl::Id, chip::app::Clusters::LevelControl::Attributes::CurrentLevel::Id, &currentLevel, sizeof(currentLevel));
-                                syslog(LOG_DEBUG, "%s: currentLevel=%d\n", __FUNCTION__, currentLevel);
-                                if(currentLevel <=1)
-                                {
-                                    dev->cmdData[dev->cmdSize++] = 254;
-                                }
-                                else
-                                {
-                                    dev->cmdData[dev->cmdSize++] = 1;
-                                }
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                dev->cmdData[dev->cmdSize++] = 0;
-                                break;
-                            }
-                        }
-                        if (dev->IsReachable())
-                        {
-                            ret = gDevMgr->HandleSendCommand(static_cast<Device *>(dev));
-                        }
-                        if(ret != Protocols::InteractionModel::Status::Success)
-                        {
-                            syslog(LOG_ERR, "%s: Command failed: mEndpointId=%d endpointIndex=%d clusterId=0x%x commandId=0x%x\n", __FUNCTION__,
-                                        dev->pendingCmdEndpointId ,commandPath.mEndpointId ,dev->pendingCmdClusterId ,dev->pendingCmdCommandId);
-                            return(CHIP_ERROR_INCORRECT_STATE);
-                        }
-                        syslog(LOG_INFO, "%s: Command successfully processed: mEndpointId=%d endpointIndex=%d clusterId=0x%x commandId=0x%x\n", __FUNCTION__,
-                            dev->pendingCmdEndpointId ,commandPath.mEndpointId ,dev->pendingCmdClusterId ,dev->pendingCmdCommandId);
-                            usleep(COMMAND_COMPLETED_TIME_MS * 1000);
-                            
-                    }
-                }
-            }
         }
         return(CHIP_NO_ERROR);
     }
@@ -275,7 +222,6 @@ public:
         if (endpointIndex < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
         {
             Device * dev = BridgeDevMgr::gDevices[endpointIndex];
-            BridgeDevMgr *gDevMgr = new BridgeDevMgr;
 
             syslog(LOG_INFO, "%s: mEndpointId=%d endpointIndex=%d mClusterId=0x%x mCommandId=0x%x dev->dev_pending_command: %d\n", __FUNCTION__,
                             commandPath.mEndpointId ,endpointIndex ,commandPath.mClusterId ,commandPath.mCommandId,dev->dev_pending_command);
@@ -410,10 +356,23 @@ int BridgeDevMgr::AddNewZigbeeDevice(m2z_device_params_t* zigbee_node)
     // One Matter dynamic endpoint per Zigbee endpoint: a multi gang device exposes one Matter
     // endpoint per gang, which is required because a Matter endpoint can carry only one instance
     // of a given cluster.
-    int added = 0;
+    int bridged = 0;
+    int failed  = 0;
     bool multi_ep = (zigbee_node->endpoint > 1);
     for (uint8_t ep_index = 0; ep_index < zigbee_node->endpoint; ep_index++)
     {
+        zb_uint16_t profile_id = zigbee_node->endpoints[ep_index].profile_id;
+
+        // Only bridge application endpoints (HA or ZLL profile). Endpoints on other
+        // profiles (e.g. 0xA1E0 Green Power) do not expose clusters a Matter
+        // controller can use, so they must not become Matter endpoints.
+        if (profile_id != ZB_AF_HA_PROFILE_ID && profile_id != ZB_AF_ZLL_PROFILE_ID)
+        {
+            syslog(LOG_INFO, "%s: skip zigbee ep %d with non-application profile 0x%04x", __FUNCTION__,
+                   zigbee_node->endpoints[ep_index].ep_id, profile_id);
+            continue;
+        }
+
         std::string ep_name = name;
         if (multi_ep)
         {
@@ -421,15 +380,22 @@ int BridgeDevMgr::AddNewZigbeeDevice(m2z_device_params_t* zigbee_node)
         }
         if (AddNewZigbeeEndpoint(zigbee_node, ep_index, ep_name, location) >= 0)
         {
-            added++;
+            bridged++;
+        }
+        else
+        {
+            failed++;
         }
     }
 
-    syslog(LOG_INFO, "%s: added %d Matter endpoint(s) for Zigbee node 0x%04x", __FUNCTION__, added, zigbee_node->short_addr);
-    return added;
+    syslog(LOG_INFO, "%s: bridged %d Matter endpoint(s) for Zigbee node 0x%04x (%d failed), already bridged ones are reused",
+           __FUNCTION__, bridged, zigbee_node->short_addr, failed);
+    return bridged;
 }
 
-int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t ep_index, const std::string & name, const std::string & location)
+int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t ep_index, const std::string & name,
+                                       const std::string & location, chip::EndpointId preferredMatterEndpointId,
+                                       bool markReachable)
 {
     if (zigbee_node == nullptr || ep_index >= zigbee_node->endpoint)
     {
@@ -438,7 +404,24 @@ int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t
 
     zb_uint16_t ep_id = zigbee_node->endpoints[ep_index].ep_id;
 
-    Device * newDevice = new Device(name, location);
+    // A Zigbee endpoint is bridged exactly once. The same node may be announced again
+    // (rejoin, or boot where RestoreBridgedDevices() already recreated its endpoints), and
+    // the restored devices are not reachable yet, so reachability cannot be used as the
+    // "already bridged" indication.
+    for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+    {
+        Device * dev = gDevices[i];
+        // (short address, endpoint id) is the Zigbee identity of an endpoint, and it survives a
+        // reboot, unlike the m2z_device_params_t pointer which depends on the device table slot.
+        if (dev != nullptr && dev->GetZigbeeRcpSaddr() == zigbee_node->short_addr && dev->GetZigbeeEp() == ep_id)
+        {
+            syslog(LOG_INFO, "%s: Zigbee node 0x%04x ep %d is already bridged to Matter endpoint %u (index=%u), skip",
+                   __FUNCTION__, zigbee_node->short_addr, ep_id, dev->GetEndpointId(), i);
+            return i;
+        }
+    }
+
+    std::unique_ptr<Device> newDevice(new Device(name, location));
     newDevice->SetZigbeeRcp(zigbee_node);
     newDevice->SetZigbeeEp(ep_id);
     newDevice->SetMatterDeviceTypes(zigbee_node, ep_index);
@@ -450,6 +433,12 @@ int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t
     // Descriptor and Bridged Device Basic Information are mandatory on every bridged endpoint.
     for ( zb_uint16_t attr_idx = DUMMY_ENDPOINT_2_FIRST_CLUSTER_INDEX; attr_idx < GENERATED_CLUSTER_COUNT; attr_idx++)
     {
+        if (mapped_clusters_number >= MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP)
+        {
+            syslog(LOG_WARNING, "%s: cluster list is full (%u), stopping at cluster 0x%04x", __FUNCTION__,
+                   (unsigned) mapped_clusters_number, generatedClusters[attr_idx].clusterId);
+            break;
+        }
         if (generatedClusters[attr_idx].clusterId == Descriptor::Id)
         {
             syslog(LOG_DEBUG, "\t%s : Found GENERATED_CLUSTERS clusterId: %d ",__FUNCTION__, generatedClusters[attr_idx].clusterId);
@@ -476,6 +465,13 @@ int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t
         {
             if (generatedClusters[attr_idx].clusterId == clusterId)
             {
+                if (mapped_clusters_number >= MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP)
+                {
+                    syslog(LOG_WARNING, "%s: cluster list is full (%u), drop Zigbee cluster 0x%04x of ep %d",
+                           __FUNCTION__, (unsigned) mapped_clusters_number, zigbee_node->endpoints[ep_index].ep_cluster[j].cluster_id,
+                           ep_id);
+                    break;
+                }
                 syslog(LOG_INFO, "\t%s : Found GENERATED_CLUSTERS clusterId: %d == zigbee_node->endpoints[%d].ep_cluster[%d].cluster_id: %d",__FUNCTION__, generatedClusters[attr_idx].clusterId,
                        ep_index, j, zigbee_node->endpoints[ep_index].ep_cluster[j].cluster_id);
                 newDevice->clusterList[mapped_clusters_number++] = generatedClusters[attr_idx];
@@ -489,22 +485,16 @@ int BridgeDevMgr::AddNewZigbeeEndpoint(m2z_device_params_t* zigbee_node, uint8_t
     newDevice->endpointType.endpointSize = 0;
     newDevice->SetEndpointClustersCount((int)mapped_clusters_number);
 
-    return AddDeviceEndpoint(newDevice, &(newDevice->endpointType), newDevice->deviceTypes,
-                             newDevice->dataVersions, 1);
+    // SetDynamicEndpoint() takes ownership of the device on success (it stores the pointer in
+    // gDevices[]), so release the unique_ptr only once the endpoint has been created.
+    int rc = SetDynamicEndpoint(newDevice.get(), &(newDevice->endpointType), newDevice->deviceTypes,
+                                newDevice->dataVersions, 1, preferredMatterEndpointId, markReachable);
+    if (rc >= 0)
+    {
+        newDevice.release();
+    }
+    return rc;
 }
-
-//void BridgeDevMgr::MapZigbeeNodes()
-//{
-    //ZigbeeDev_t * ZigbeeDevList[CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT];
-    ////newDbGetZigbeeDeviceList(ZigbeeDevList, CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT, &ZcbNodesNum);
-
-    //for (int i = 0; i < ZcbNodesNum; i++)
-    //{
-        ////AddNewZigbeeNode(ZigbeeDevList[i]);
-    //}
-
-    ////newDbfreeZigbeeDeviceList(ZigbeeDevList, ZcbNodesNum);
-//}
 
 void BridgeDevMgr::init()
 {
@@ -516,15 +506,15 @@ void BridgeDevMgr::start()
 {
     mFirstDynamicEndpointId = static_cast<chip::EndpointId>(
     static_cast<int>(emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1))) + 1);
-    mCurrentEndpointId = mFirstDynamicEndpointId;
 
     chip::DataModelCallbacks::SetInstance(&gBridgeMatterCallbacks);
+
+    RestoreBridgedDevices();
 
     // start monitor
     m2z_impl_start_threads();
     start_ZigbeeRcp_comm_thread();
     m2z_register_message_callback(send_message_to_comm_thread);
-
 }
 
 void BridgeDevMgr::RemoveAllDevice()
@@ -538,12 +528,11 @@ void BridgeDevMgr::RemoveAllDevice()
     }
 
     memset(gDevices, 0, sizeof(Device *) * CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT);
-    mCurrentEndpointId = mFirstDynamicEndpointId;
 }
 
 void BridgeDevMgr::RemoveDevice(Device * dev)
 {
-    RemoveDeviceEndpoint(dev);
+    ClearDynamicEndpoint(dev);
     //if (dev->GetZigbee()->zcb.uSupportedClusters.sClusterBitmap.hasOnOff)
     //{
         //RemoveOnOffNode(static_cast<DeviceOnOff *>(dev));
@@ -555,33 +544,18 @@ void BridgeDevMgr::RemoveDevice(Device * dev)
     //}
 }
 
-//void BridgeDevMgr::RemoveOnOffNode(DeviceOnOff * dev)
-//{
-    //delete dev;
-    //dev = nullptr;
-//}
-
-//void BridgeDevMgr::RemoveTempMeasurementNode(DeviceTempSensor * dev)
-//{
-    //delete dev;
-    //dev = nullptr;
-//}
-
 // -----------------------------------------------------------------------------------------
 // Device Management
 // -----------------------------------------------------------------------------------------
 
-int BridgeDevMgr::AddDeviceEndpoint(Device * dev, EmberAfEndpointType *ep, EmberAfDeviceType *deviceTypeList,
-                                    DataVersion * dataVersionStorage,
-                                    chip::EndpointId parentEndpointId)
+// Publish one Matter dynamic endpoint for an already fully described Device.
+int BridgeDevMgr::SetDynamicEndpoint(Device * dev, EmberAfEndpointType *ep, EmberAfDeviceType *deviceTypeList,
+                                     DataVersion * dataVersionStorage,
+                                     chip::EndpointId parentEndpointId,
+                                     chip::EndpointId preferredEndpointId,
+                                     bool markReachable)
 {
     uint8_t index = 0;
-
-    if (dev->IsReachable() == true)
-    {
-        syslog(LOG_INFO, "%s: The endpoints has been added!", __FUNCTION__);
-        return -1;
-    }
 
     while (index < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
     {
@@ -589,35 +563,48 @@ int BridgeDevMgr::AddDeviceEndpoint(Device * dev, EmberAfEndpointType *ep, Ember
         {
             gDevices[index] = dev;
             CHIP_ERROR ret;
-            while (1)
+
+            /* Reuse the endpoint id that this device had before the reboot when
+             * possible: controllers cache endpoint ids. */
+            chip::EndpointId endpointId = preferredEndpointId;
+            if (endpointId == chip::kInvalidEndpointId || EndpointIdInUse(endpointId))
+            {
+                endpointId = AllocateEndpointId();
+            }
+
+            /* Retry with another id when the data model reports the wanted id as taken. */
+            while (endpointId != chip::kInvalidEndpointId)
             {
                 DeviceLayer::StackLock lock;
-                dev->SetEndpointId(mCurrentEndpointId);
+                dev->SetEndpointId(endpointId);
                 dev->SetParentEndpointId(parentEndpointId);
-                
+
                 chip::Span<EmberAfDeviceType> device_types(deviceTypeList, dev->GetDeviceTypeCount());
                 chip::Span<chip::DataVersion> data_versions(dataVersionStorage, dev->GetEndpointClustersCount());
-                
-                ret = emberAfSetDynamicEndpoint(index, mCurrentEndpointId, ep, data_versions, device_types, parentEndpointId);
+
+                ret = emberAfSetDynamicEndpoint(index, endpointId, ep, data_versions, device_types, parentEndpointId);
                 if (ret == CHIP_NO_ERROR)
                 {
-                    dev->SetReachable(true);
+                    if (markReachable)
+                    {
+                        dev->SetReachable(true);
+                    }
                     dev->SetMatterIndex(index);
-                    std::string name=dev->GetName();
-                    syslog(LOG_INFO, "%s: Added device %s addr %x to dynamic endpoint %d (index=%d)", __FUNCTION__,
-                                    (dev->GetName()).c_str(), dev->GetZigbeeRcpSaddr(), mCurrentEndpointId, index);
+                    syslog(LOG_INFO, "%s: Set device %s addr %x on dynamic endpoint %d (index=%d)", __FUNCTION__,
+                                    (dev->GetName()).c_str(), dev->GetZigbeeRcpSaddr(), endpointId, index);
                     return index;
                 }
                 if (ret != CHIP_ERROR_ENDPOINT_EXISTS)
                 {
-                    return -1;
+                    syslog(LOG_ERR, "%s: emberAfSetDynamicEndpoint() failed: %s", __FUNCTION__, chip::ErrorStr(ret));
+                    break;
                 }
-                // Handle wrap condition
-                if (++mCurrentEndpointId < mFirstDynamicEndpointId)
-                {
-                    mCurrentEndpointId = mFirstDynamicEndpointId;
-                }
+                endpointId = AllocateEndpointId();
             }
+
+            syslog(LOG_ERR, "%s: failed to set a dynamic endpoint for %s", __FUNCTION__, (dev->GetName()).c_str());
+            gDevices[index] = nullptr;
+            return -1;
         }
         index++;
     }
@@ -625,7 +612,225 @@ int BridgeDevMgr::AddDeviceEndpoint(Device * dev, EmberAfEndpointType *ep, Ember
     return -1;
 }
 
-int BridgeDevMgr::RemoveDeviceEndpoint(Device * dev)
+bool BridgeDevMgr::EndpointIdInUse(chip::EndpointId endpointId)
+{
+    for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+    {
+        Device * dev = gDevices[i];
+        if (dev != nullptr && dev->GetEndpointId() == endpointId)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+chip::EndpointId BridgeDevMgr::AllocateEndpointId()
+{
+    for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+    {
+        chip::EndpointId candidate = static_cast<chip::EndpointId>(mFirstDynamicEndpointId + i);
+        if (!EndpointIdInUse(candidate))
+        {
+            return candidate;
+        }
+    }
+    /* Should not happen: one endpoint id per dynamic slot. */
+    syslog(LOG_WARNING, "%s: no free endpoint id left", __FUNCTION__);
+    return chip::kInvalidEndpointId;
+}
+
+static const char * kBridgeDeviceStorePath = "/var/local/zboss/M2ZigbeeRcp-bridge.devices";
+
+void BridgeDevMgr::SaveBridgedDevices()
+{
+    if (!m2z_persist_enabled)
+    {
+        return;
+    }
+
+    char tmpPath[160];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", kBridgeDeviceStorePath);
+
+    FILE * f = fopen(tmpPath, "wb");
+    if (f == nullptr)
+    {
+        syslog(LOG_ERR, "%s: cannot open %s for writing", __FUNCTION__, tmpPath);
+        return;
+    }
+
+    uint32_t magic = M2Z_STORE_MAGIC;
+    uint16_t version = M2Z_STORE_VERSION;
+    uint16_t nodeCount = 0;
+
+    m2z_device_params_t * nodes[CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT];
+    for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+    {
+        Device * dev = gDevices[i];
+        if (dev == nullptr || dev->GetZigbeeRcp() == nullptr)
+        {
+            continue;
+        }
+        bool seen = false;
+        for (uint16_t k = 0; k < nodeCount; k++)
+        {
+            if (nodes[k] == dev->GetZigbeeRcp())
+            {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen)
+        {
+            nodes[nodeCount++] = dev->GetZigbeeRcp();
+        }
+    }
+
+    fwrite(&magic, sizeof(magic), 1, f);
+    fwrite(&version, sizeof(version), 1, f);
+    fwrite(&nodeCount, sizeof(nodeCount), 1, f);
+
+    for (uint16_t k = 0; k < nodeCount; k++)
+    {
+        m2z_device_params_t * node = nodes[k];
+        m2z_stored_device_t rec;
+        memset(&rec, 0, sizeof(rec));
+
+        memcpy(rec.ieee_addr, node->ieee_addr, sizeof(rec.ieee_addr));
+        rec.short_addr = node->short_addr;
+        rec.ep_count = node->endpoint;
+        if (rec.ep_count > MATTER_ZIGBEERCP_BRIDGE_MAX_EP_PER_DEV)
+        {
+            rec.ep_count = MATTER_ZIGBEERCP_BRIDGE_MAX_EP_PER_DEV;
+        }
+
+        for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+        {
+            if (gDevices[i] != nullptr && gDevices[i]->GetZigbeeRcp() == node)
+            {
+                snprintf(rec.location, sizeof(rec.location), "%s", gDevices[i]->GetLocation().c_str());
+                break;
+            }
+        }
+
+        uint8_t stored_eps = 0;
+        for (uint8_t e = 0; e < node->endpoint && stored_eps < MATTER_ZIGBEERCP_BRIDGE_MAX_EP_PER_DEV; e++)
+        {
+            m2z_device_ep_t * ep = &node->endpoints[e];
+            m2z_stored_ep_t * sep = &rec.eps[stored_eps];
+
+            // Only remember endpoints that were actually bridged to a Matter endpoint.
+            chip::EndpointId matter_ep_id = chip::kInvalidEndpointId;
+            for (uint16_t i = 0; i < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT; i++)
+            {
+                Device * dev = gDevices[i];
+                if (dev != nullptr && dev->GetZigbeeRcp() == node && dev->GetZigbeeEp() == ep->ep_id)
+                {
+                    matter_ep_id = dev->GetEndpointId();
+                    snprintf(sep->name, sizeof(sep->name), "%s", dev->GetName().c_str());
+                    break;
+                }
+            }
+            if (matter_ep_id == chip::kInvalidEndpointId)
+            {
+                continue;
+            }
+
+            sep->ep_id = ep->ep_id;
+            sep->profile_id = ep->profile_id;
+            sep->device_id = ep->device_id;
+            sep->num_out_clusters = ep->num_out_clusters;
+            sep->matter_ep_id = matter_ep_id;
+            sep->num_in_clusters = 0;
+
+            for (uint8_t c = 0; c < MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP; c++)
+            {
+                if (ep->ep_cluster[c].in_cluster && sep->num_in_clusters < MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP)
+                {
+                    sep->in_clusters[sep->num_in_clusters++] = ep->ep_cluster[c].cluster_id;
+                }
+            }
+            stored_eps++;
+        }
+        rec.ep_count = stored_eps;
+
+        fwrite(&rec, sizeof(rec), 1, f);
+    }
+
+    fclose(f);
+    rename(tmpPath, kBridgeDeviceStorePath);
+    syslog(LOG_INFO, "%s: saved %d bridged device(s)", __FUNCTION__, nodeCount);
+}
+
+void BridgeDevMgr::RestoreBridgedDevices()
+{
+    if (!m2z_persist_enabled)
+    {
+        return;
+    }
+
+    FILE * f = fopen(kBridgeDeviceStorePath, "rb");
+    if (f == nullptr)
+    {
+        return;
+    }
+
+    uint32_t magic = 0;
+    uint16_t version = 0;
+    uint16_t count = 0;
+    if (fread(&magic, sizeof(magic), 1, f) != 1 || fread(&version, sizeof(version), 1, f) != 1 ||
+        fread(&count, sizeof(count), 1, f) != 1 || magic != M2Z_STORE_MAGIC || version != M2Z_STORE_VERSION)
+    {
+        syslog(LOG_ERR, "%s: invalid bridged device store, ignoring it", __FUNCTION__);
+        fclose(f);
+        return;
+    }
+
+    syslog(LOG_INFO, "%s: restoring %d bridged device(s)", __FUNCTION__, count);
+
+    for (uint16_t k = 0; k < count; k++)
+    {
+        m2z_stored_device_t rec;
+        if (fread(&rec, sizeof(rec), 1, f) != 1)
+        {
+            break;
+        }
+
+        zb_uint16_t devIdx = m2z_store_restore_device(&rec);
+        if (devIdx == MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+        {
+            syslog(LOG_ERR, "%s: cannot restore device short 0x%04x (no slot)", __FUNCTION__, rec.short_addr);
+            continue;
+        }
+        syslog(LOG_INFO, "%s: device short 0x%04x ep_count %d -> zigbee dev index %d", __FUNCTION__, rec.short_addr,
+               rec.ep_count, devIdx);
+
+        m2z_device_params_t * node = m2z_get_device_params(devIdx);
+        if (node == nullptr)
+        {
+            continue;
+        }
+
+        for (uint8_t e = 0; e < rec.ep_count; e++)
+        {
+            std::string name = rec.eps[e].name;
+            if (name.empty())
+            {
+                name = "Zigbee Device";
+            }
+            int rc = AddNewZigbeeEndpoint(node, e, name, rec.location, rec.eps[e].matter_ep_id, false);
+            syslog(LOG_INFO, "%s: restore device short 0x%04x zigbee ep %d -> %s (rc=%d)", __FUNCTION__, rec.short_addr,
+                   rec.eps[e].ep_id, name.c_str(), rc);
+        }
+    }
+
+    fclose(f);
+}
+
+// Remove the Matter dynamic endpoint of a device and free its gDevices[] slot. The Device object
+// stays alive: bridging is only undone when the whole bridge goes down, so it is freed with the
+// process instead of here (deleting it while Zigbee reports may still arrive would be unsafe).
+int BridgeDevMgr::ClearDynamicEndpoint(Device * dev)
 {
     uint8_t index = 0;
     while (index < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
@@ -638,9 +843,10 @@ int BridgeDevMgr::RemoveDeviceEndpoint(Device * dev)
             // disabled.
             [[maybe_unused]] EndpointId ep   = emberAfClearDynamicEndpoint(index);
             gDevices[index] = nullptr;
-            syslog(LOG_INFO, "%s: Removed device %s from dynamic endpoint %d (index=%d)", __FUNCTION__,
-                            (dev->GetName()).c_str(), ep, index);
+            syslog(LOG_INFO, "%s: Cleared dynamic endpoint %d (index=%d) of device %s", __FUNCTION__, ep, index,
+                            (dev->GetName()).c_str());
 
+            SaveBridgedDevices();
             return index;
         }
         index++;
@@ -668,6 +874,7 @@ void * BridgeDevMgr::ZigbeeRcpComm_handler(void * context)
                     case BRIDGE_ADD_DEV: {
                         ZigbeeRcp_device->dev_state = ANNOUNCE_COMPLETED;
                         ThisMgr->AddNewZigbeeDevice(ZigbeeRcp_device);
+                        ThisMgr->SaveBridgedDevices();
                         ZigbeeRcpMsg.ZigbeeRcp_dev      = { 0 };
                         ZigbeeRcpMsg.msg_type = BRIDGE_UNKNOW;
                         while(ZigbeeRcp_device->dev_state == ANNOUNCE_COMPLETED)
@@ -691,6 +898,7 @@ void * BridgeDevMgr::ZigbeeRcpComm_handler(void * context)
                             syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_UNSUPPORTED: ---> UNSUPPORTED Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
                             DeviceLayer::StackLock lock;
                             emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), false);
+                            dev->SetReachable(false);
                         }
                         index++;
                     }
@@ -709,6 +917,7 @@ void * BridgeDevMgr::ZigbeeRcpComm_handler(void * context)
                             syslog(LOG_INFO, "%s: BRIDGE_SET_DEV_ACTIVE: ---> Activate Dynamic Endpoint: %d !!!\n", __FUNCTION__, dev->GetEndpointId());
                             DeviceLayer::StackLock lock;
                             emberAfEndpointEnableDisable(emberAfEndpointFromIndex(dev->GetEndpointId()), true);
+                            dev->SetReachable(true);
                         }
                         index++;
                     }
@@ -1090,7 +1299,6 @@ Protocols::InteractionModel::Status emberAfExternalAttributeReadCallback(Endpoin
                                                    uint16_t maxReadLength)
 {
     uint16_t endpointIndex = emberAfGetDynamicIndexFromEndpoint(endpoint);
-    BridgeDevMgr *gDevMgr = new BridgeDevMgr;
 
     Protocols::InteractionModel::Status ret = Protocols::InteractionModel::Status::Failure;
     syslog(LOG_INFO, "%s: ep=%d endpointIndex=%d clusterId=%d attributeId=%d  maxReadLength=%d\n",__FUNCTION__,
@@ -1102,7 +1310,15 @@ Protocols::InteractionModel::Status emberAfExternalAttributeReadCallback(Endpoin
 
         if (dev->IsReachable())
         {
-            ret = gDevMgr->HandleReadAttribute(dev, clusterId, attributeMetadata->attributeId, buffer, maxReadLength);
+            ret = BridgeDevMgr::HandleReadAttribute(dev, clusterId, attributeMetadata->attributeId, buffer, maxReadLength);
+        }
+        else
+        {
+            // Just-bridged devices are not reachable until their first report/web
+            // comes in, yet code-driven clusters (e.g. Scenes) validate mandatory
+            // attributes while the endpoint is registered. Serve the default value
+            // so that initialization does not abort.
+            ret = ReadStaticAttributeDefault(attributeMetadata, buffer);
         }
     }
     else
@@ -1129,14 +1345,13 @@ Protocols::InteractionModel::Status emberAfExternalAttributeWriteCallback(Endpoi
     if (endpointIndex < CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT)
     {
         Device * dev = BridgeDevMgr::gDevices[endpointIndex];
-        BridgeDevMgr *gDevMgr = new BridgeDevMgr;
 
         if (dev->IsReachable())
         {
             ret = CanWriteAttribute(static_cast<Device *>(dev), clusterId, attributeMetadata->attributeId, true);
             if(ret == Protocols::InteractionModel::Status::Success)
             {
-                ret = gDevMgr->HandleWriteAttribute(static_cast<Device *>(dev), clusterId, attributeMetadata->attributeId, buffer);
+                ret = BridgeDevMgr::HandleWriteAttribute(static_cast<Device *>(dev), clusterId, attributeMetadata->attributeId, buffer);
             }
             if(ret == Protocols::InteractionModel::Status::UnsupportedWrite)
             {

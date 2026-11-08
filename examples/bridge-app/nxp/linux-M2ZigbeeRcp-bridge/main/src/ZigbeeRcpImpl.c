@@ -44,6 +44,17 @@ zb_uint8_t g_active_cmds = 0;
 typedef void (*callback)(int MsgType, void* ZigbeeRcp_dev, void* data);
 m2z_callback_t ZigbeeRcp_msg_callback=NULL;
 
+/* Defined later in this file; used while restoring persisted devices. */
+void m2z_update_endpoint_supported_clusters(m2z_device_params_t *device, uint16_t zcl_cluster_id);
+
+zb_bool_t m2z_persist_enabled = ZB_FALSE;
+
+void m2z_set_persist_enabled(zb_bool_t enabled)
+{
+  m2z_persist_enabled = enabled;
+  syslog(LOG_INFO, "%s: device persistence %s", __FUNCTION__, enabled ? "enabled" : "disabled");
+}
+
 static const zb_uint8_t g_key_nwk[16] = { 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0, 0, 0, 0, 0, 0, 0, 0};
 
 /**
@@ -264,6 +275,9 @@ void m2z_impl_init()
 
     /* Trace enable */
     ZB_SET_TRACE_ON();
+    /* Verbose security trace (temporary debug): NWK/ZDO/SECUR subsystems. */
+    ZB_SET_TRACE_LEVEL(4);
+    ZB_SET_TRACE_MASK(0x000000C8);
 
     /* Global Matter To ZigbeeRcp Bridge initialization */
     ZB_INIT("M2ZigbeeRcp-bridge");
@@ -277,7 +291,17 @@ void m2z_impl_init()
     /* Optional step: Setup predefined nwk key - to easily decrypt ZB sniffer logs which does not
     * contain keys exchange. By default nwk key is randomly generated. */
     /* [zb_secur_setup_preconfigured_key] */
-    zb_secur_setup_nwk_key((zb_uint8_t *) g_key_nwk, 0);
+#if defined ZB_SECURITY_INSTALLCODES
+    /* Trust Center policy: do not require install codes. ZBOSS r23 defaults to
+       requiring an install code for non-legacy joiners, which makes ordinary
+       Zigbee 3.0 devices (using the well-known TC link key) fail authorization. */
+    zb_set_installcode_policy(ZB_INSTALL_CODE_NOT_REQUIRED);
+#endif
+
+    /* Use ZBOSS-generated random NWK key instead of a preconfigured one, so the
+       trust center performs the standard TC link key / NWK key exchange with
+       Zigbee 3.0 devices (a preconfigured key makes strict ZB3 joiners leave). */
+    (void) g_key_nwk;
     /* [zb_secur_setup_preconfigured_key] */
 
     /* Register NVRAM application callbacks - to be able to store application data to the special
@@ -583,6 +607,9 @@ void zboss_signal_handler(zb_cb_param_t cb_param)
 #ifndef ZB_MACSPLIT_HOST
         zboss_start_continue();
 #endif /* ZB_MACSPLIT_HOST */
+        /* The address map was restored from ZBOSS NVRAM: refresh the short
+         * addresses of the devices restored from our own store. */
+        m2z_store_refresh_restored_devices();
         break;
 
 #ifdef ZB_MACSPLIT_HOST
@@ -590,6 +617,10 @@ void zboss_signal_handler(zb_cb_param_t cb_param)
         zb_zdo_signal_macsplit_dev_boot_params_t *boot_params = ZB_ZDO_SIGNAL_GET_PARAMS(p_sg_p, zb_zdo_signal_macsplit_dev_boot_params_t);
         syslog(LOG_INFO, "%s: signal %02u -> ZB_MACSPLIT_DEVICE_BOOT: IEEE Addr: 0x08%x DeviceVersion: 0x%x"\
         , __FUNCTION__, sig, boot_params->extended_address, boot_params->dev_version);
+        /* Default behaviour: continue the ZBOSS startup as soon as the RCP is
+         * ready, so the coordinator forms its network and opens for steering
+         * without waiting for an external Start Network action. */
+        zboss_start_continue();
         break;
 #endif /* ZB_MACSPLIT_HOST */
 
@@ -608,6 +639,7 @@ void zboss_signal_handler(zb_cb_param_t cb_param)
 
       case ZB_BDB_SIGNAL_STEERING:
         syslog(LOG_INFO, "%s: signal %02u -> ZB_BDB_SIGNAL_STEERING: Successful steering", __FUNCTION__, sig);
+        m2z_store_probe_restored_devices();
         break;
 
       case ZB_BDB_SIGNAL_FORMATION:
@@ -795,6 +827,11 @@ void m2z_callback_dev_updated(zb_zdo_signal_device_update_params_t *dev_updated_
     if (idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
     {
         syslog(LOG_DEBUG, "%s: It is known device...", __FUNCTION__);
+        if (g_device_ctx.devices[idx].short_addr != dev_updated_params->short_addr)
+        {
+            /* Keep the table in sync when a device re-joins with a new address. */
+            g_device_ctx.devices[idx].short_addr = dev_updated_params->short_addr;
+        }
     }
     syslog(LOG_DEBUG, "<<  %s ", __FUNCTION__);
 }
@@ -833,6 +870,21 @@ void m2z_callback_dev_authorized(zb_zdo_signal_device_authorized_params_t *dev_a
     syslog(LOG_DEBUG, ">> %s ", __FUNCTION__);
     zb_uint16_t idx = m2z_dev_get_index_by_ieee_addr(dev_authorized_params->long_addr);
 
+    if (idx == MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+    {
+        /* A brand new device was authorized on the network: register it and
+         * start the endpoint/cluster discovery, exactly like the annce path. */
+        idx = m2z_dev_get_index_by_state(NO_DEVICE);
+        if (idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+        {
+            g_device_ctx.devices[idx].short_addr = dev_authorized_params->short_addr;
+            ZB_IEEE_ADDR_COPY(g_device_ctx.devices[idx].ieee_addr, dev_authorized_params->long_addr);
+            g_device_ctx.devices[idx].dev_state = COMPLETED;
+            g_device_ctx.devices[idx].announced_to_bridge = 0;
+            ZB_SCHEDULE_APP_ALARM(m2z_schedule_request_active_ep, (uint8_t)idx, 0.1 * ZB_TIME_ONE_SECOND);
+        }
+    }
+
     if (idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
     {
         if( g_device_ctx.devices[idx].dev_state == BRIDGED_UNAVAILABLE || g_device_ctx.devices[idx].dev_state == BRIDGED_LEFT_NETWORK)
@@ -847,9 +899,21 @@ void m2z_callback_dev_authorized(zb_zdo_signal_device_authorized_params_t *dev_a
             g_device_ctx.devices[idx].authorization_status = dev_authorized_params->authorization_status;
             g_device_ctx.devices[idx].announced_to_bridge = 0;
         }
+        if (g_device_ctx.devices[idx].short_addr != dev_authorized_params->short_addr)
+        {
+            /* A re-joining device can be assigned a new short address. */
+            g_device_ctx.devices[idx].short_addr = dev_authorized_params->short_addr;
+        }
+        syslog(LOG_DEBUG, "%s: Device: Short Addr: 0x%x IEEE Addr: " TRACE_FORMAT_64 "" \
+        , __FUNCTION__, g_device_ctx.devices[idx].short_addr, TRACE_ARG_64(g_device_ctx.devices[idx].ieee_addr));
     }
-    syslog(LOG_DEBUG, "%s: Device: Short Addr: 0x%x IEEE Addr: " TRACE_FORMAT_64 "" \
-    , __FUNCTION__, g_device_ctx.devices[idx].short_addr, TRACE_ARG_64(g_device_ctx.devices[idx].ieee_addr));
+    else
+    {
+        /* Never index g_device_ctx with an invalid index: it used to crash the
+         * application when an unknown device sent DEVICE_AUTHORIZED. */
+        syslog(LOG_WARNING, "%s: unknown device Short Addr: 0x%x IEEE Addr: " TRACE_FORMAT_64 "" \
+        , __FUNCTION__, dev_authorized_params->short_addr, TRACE_ARG_64(dev_authorized_params->long_addr));
+    }
     syslog(LOG_DEBUG, "<<  %s ", __FUNCTION__);
 }
 
@@ -1600,7 +1664,7 @@ void m2z_callback_dev_simple_desc(zb_cb_param_t cb_param)
         }
         else
         {
-            syslog(LOG_DEBUG, "%s: ep %hd, profile_id %d, dev id %d, dev ver %hd, input count 0x%hx, output count 0x%hx",
+            syslog(LOG_INFO, "%s: ep %hd, profile_id 0x%04x, dev id 0x%04x, dev ver %hd, input count 0x%hx, output count 0x%hx",
                     __FUNCTION__, resp->simple_desc.endpoint, resp->simple_desc.app_profile_id,
                     resp->simple_desc.app_device_id, resp->simple_desc.app_device_version,
                   resp->simple_desc.app_input_cluster_count, resp->simple_desc.app_output_cluster_count);
@@ -1704,12 +1768,12 @@ void m2z_callback_dev_active_ep(zb_cb_param_t cb_param)
       } else
       {
         g_device_ctx.devices[dev_idx].endpoint = resp->ep_count;
-        syslog(LOG_DEBUG, "%s: ep count %hd, ep numbers:", __FUNCTION__, resp->ep_count);
+        syslog(LOG_INFO, "%s: addr 0x%x active ep count %hd", __FUNCTION__, resp->nwk_addr, resp->ep_count);
         /* Add all received EPs to the EP array */
         for (int i = 0; i < resp->ep_count; i++)
         {
           g_device_ctx.devices[dev_idx].endpoints[i].ep_id = *(ep_list + i);
-          syslog(LOG_DEBUG, "%s: ep %hd", __FUNCTION__, *(ep_list + i));
+          syslog(LOG_INFO, "%s: addr 0x%x ep[%d] %hd", __FUNCTION__, resp->nwk_addr, i, *(ep_list + i));
           /*Send a simple_dec_req per active EP received*/
           ZB_SCHEDULE_APP_ALARM(m2z_schedule_request_simple_desc, (uint8_t)dev_idx, 0.1 * ZB_TIME_ONE_SECOND);
         }
@@ -1827,3 +1891,193 @@ zb_ret_t m2z_nvram_write_app_data(zb_uint8_t page, zb_uint32_t pos)
 
 #endif  /* ZB_USE_NVRAM */
 
+
+/* ------------------------------------------------------------------------- */
+/* Bridged device persistence (survives reboots)                             */
+/* ------------------------------------------------------------------------- */
+
+m2z_device_params_t * m2z_get_device_params(zb_uint16_t dev_idx)
+{
+  if (dev_idx >= ZB_ARRAY_SIZE(g_device_ctx.devices))
+  {
+    return NULL;
+  }
+  return &g_device_ctx.devices[dev_idx];
+}
+
+zb_uint16_t m2z_store_restore_device(const m2z_stored_device_t * rec)
+{
+  zb_uint16_t idx;
+  zb_uint16_t i;
+  zb_uint16_t j;
+  m2z_device_params_t * dev;
+
+  if (rec == NULL || rec->ep_count == 0 || rec->ep_count > MATTER_ZIGBEERCP_BRIDGE_MAX_EP_PER_DEV)
+  {
+    return MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX;
+  }
+
+  idx = m2z_dev_get_index_by_state(NO_DEVICE);
+  if (idx == MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+  {
+    syslog(LOG_ERR, "%s: no free device slot to restore device", __FUNCTION__);
+    return MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX;
+  }
+
+  dev = &g_device_ctx.devices[idx];
+  ZB_BZERO(dev, sizeof(*dev));
+
+  ZB_IEEE_ADDR_COPY(dev->ieee_addr, rec->ieee_addr);
+  dev->short_addr = rec->short_addr;
+  dev->endpoint   = rec->ep_count;
+  /* The device is bridged (its Matter endpoints must exist) but its state is
+   * unknown until it answers again on the Zigbee network. */
+  dev->dev_state           = BRIDGED_UNAVAILABLE;
+  dev->announced_to_bridge = 1;
+
+  for (i = 0; i < rec->ep_count; i++)
+  {
+    m2z_device_ep_t * ep = &dev->endpoints[i];
+
+    ep->ep_id           = rec->eps[i].ep_id;
+    ep->profile_id      = rec->eps[i].profile_id;
+    ep->device_id       = rec->eps[i].device_id;
+    ep->num_in_clusters = rec->eps[i].num_in_clusters;
+    ep->num_out_clusters = rec->eps[i].num_out_clusters;
+    ep->clusters_state  = KNOWN_CLUSTER;
+
+    for (j = 0; j < rec->eps[i].num_in_clusters && j < MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP; j++)
+    {
+      ep->ep_cluster[j].cluster_id       = rec->eps[i].in_clusters[j];
+      ep->ep_cluster[j].in_cluster       = true;
+      ep->ep_cluster[j].disc_attrs_state = KNOWN_DISC_ATTRS;
+      ep->ep_cluster[j].num_attrs        = 0;
+      m2z_update_endpoint_supported_clusters(dev, rec->eps[i].in_clusters[j]);
+    }
+
+    syslog(LOG_INFO, "%s: restored device 0x%04x ep %d (device_id 0x%04x, %d in clusters)",
+           __FUNCTION__, dev->short_addr, ep->ep_id, ep->device_id, ep->num_in_clusters);
+  }
+
+  return idx;
+}
+
+/* Liveness probe for a device restored from the persisted bridge store: an
+ * active-endpoint request is answered only by a device that is actually present
+ * on the network, so the response is used to mark it reachable again after a
+ * reboot. Discovery is not re-run: the endpoints were restored from the store. */
+void m2z_callback_probe_restored_device(zb_cb_param_t cb_param)
+{
+    zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
+    zb_zdo_ep_resp_t *resp = (zb_zdo_ep_resp_t *)zb_buf_begin(param);
+    zb_uint16_t dev_idx  = m2z_dev_get_index_by_short_addr(resp->nwk_addr);
+
+    if (dev_idx != MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+    {
+        if (resp->status == ZB_ZDP_STATUS_SUCCESS)
+        {
+            syslog(LOG_INFO, "%s: restored device 0x%04x answered (ep count %hd), mark reachable", __FUNCTION__, resp->nwk_addr,
+                   resp->ep_count);
+            if (ZigbeeRcp_msg_callback != NULL)
+            {
+                int MsgType = BRIDGE_SET_DEV_ACTIVE;
+                (ZigbeeRcp_msg_callback)(MsgType, (m2z_device_params_t *)(&(g_device_ctx.devices[dev_idx])), &dev_idx);
+            }
+        }
+        else
+        {
+            syslog(LOG_INFO, "%s: restored device 0x%04x did not answer (status %hd)", __FUNCTION__, resp->nwk_addr, resp->status);
+        }
+    }
+
+    zb_buf_free(param);
+}
+
+void m2z_request_probe_restored_device(zb_cb_param_t cb_param)
+{
+    zb_bufid_t param   = ZB_UNPACK_BUF_REF(cb_param);
+    zb_uint16_t dev_idx = (zb_uint16_t)ZB_UNPACK_USER_PARAM(cb_param);
+
+    if (dev_idx >= ZB_ARRAY_SIZE(g_device_ctx.devices))
+    {
+        if (param)
+        {
+            zb_buf_free(param);
+        }
+        return;
+    }
+
+    if (!param)
+    {
+        zb_buf_get_out_delayed_ext(m2z_request_probe_restored_device, dev_idx, 0);
+        return;
+    }
+
+    zb_zdo_active_ep_req_t *req = zb_buf_initial_alloc(param, sizeof(zb_zdo_active_ep_req_t));
+    req->nwk_addr               = g_device_ctx.devices[dev_idx].short_addr;
+    zb_zdo_active_ep_req(param, m2z_callback_probe_restored_device);
+}
+
+void m2z_store_refresh_restored_devices(void)
+{
+  if (!m2z_persist_enabled)
+  {
+    return;
+  }
+
+  zb_uint16_t i;
+
+  for (i = 0; i < ZB_ARRAY_SIZE(g_device_ctx.devices); i++)
+  {
+    m2z_device_params_t * dev = &g_device_ctx.devices[i];
+    zb_uint16_t short_addr;
+
+    if (dev->dev_state != BRIDGED_UNAVAILABLE)
+    {
+      continue;
+    }
+
+    if (ZB_IEEE_ADDR_IS_ZERO(dev->ieee_addr))
+    {
+      continue;
+    }
+
+    /* ZBOSS kept the IEEE <-> short address map in its own NVRAM, so this is
+     * the most reliable short address after a reboot. */
+    short_addr = zb_address_short_by_ieee(dev->ieee_addr);
+    if (short_addr != 0 && short_addr != 0xffff)
+    {
+      dev->short_addr = short_addr;
+    }
+
+    syslog(LOG_INFO, "%s: restored device ieee " TRACE_FORMAT_64 " -> short 0x%04x (waiting for it to answer)",
+           __FUNCTION__, TRACE_ARG_64(dev->ieee_addr), dev->short_addr);
+  }
+}
+
+/* Once the coordinator is back on its network, probe every device that was
+ * restored from the persisted store. A device answering the active-endpoint
+ * request is marked reachable again; one that stays silent keeps reporting
+ * BridgedDeviceBasicInformation.Reachable = FALSE (its endpoints are not removed). */
+void m2z_store_probe_restored_devices(void)
+{
+  if (!m2z_persist_enabled)
+  {
+    return;
+  }
+
+  zb_uint16_t i;
+
+  for (i = 0; i < ZB_ARRAY_SIZE(g_device_ctx.devices); i++)
+  {
+    m2z_device_params_t * dev = &g_device_ctx.devices[i];
+
+    if (dev->dev_state != BRIDGED_UNAVAILABLE || ZB_IEEE_ADDR_IS_ZERO(dev->ieee_addr))
+    {
+      continue;
+    }
+
+    syslog(LOG_INFO, "%s: probing restored device 0x%04x", __FUNCTION__, dev->short_addr);
+    ZB_SCHEDULE_APP_ALARM(m2z_request_probe_restored_device, i, ZB_TIME_ONE_SECOND + (i * ZB_TIME_ONE_SECOND) / 2);
+  }
+}

@@ -16,21 +16,13 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
-#include "Device.h"
-
 #include <cstdio>
 #include <platform/CHIPDeviceLayer.h>
 #include <syslog.h>
 #include <stdio.h>
 
-//#include "zcb.h"
-#define USE_EXTERN_C
-#ifdef USE_EXTERN_C
-extern "C"{
-    #include "ZigbeeRcpImpl.h"
-}
-#endif
+#include "Device.h"
+#include "ZigbeeRcpImpl.h"
 
 using namespace chip::app::Clusters::Actions;
 
@@ -42,6 +34,52 @@ Device::Device(std::string szDeviceName, std::string szLocation)
     mEndpointId = 0;
     mZigbeeEp   = MATTER_ZIGBEERCP_BRIDGE_INVALID_EP_INDEX;
     deviceTypeCount = 0;
+}
+
+static bool ZigbeeEpHasCluster(const m2z_device_ep_t * zigbee_ep, uint16_t zcl_cluster_id)
+{
+    for (uint8_t i = 0; i < MATTER_ZIGBEERCP_BRIDGE_MAX_CLUSTERS_PER_EP; i++)
+    {
+        if (zigbee_ep->ep_cluster[i].in_cluster && zigbee_ep->ep_cluster[i].cluster_id == zcl_cluster_id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Zigbee device IDs are frequently vendor specific (e.g. 0x0061 for a dimmable light),
+// so when the ID is not one of the standard values, infer the Matter device type from
+// the application clusters the endpoint actually implements.
+static uint16_t InferMatterDeviceTypeFromClusters(const m2z_device_ep_t * zigbee_ep)
+{
+    const bool has_on_off     = ZigbeeEpHasCluster(zigbee_ep, 0x0006); // On/Off
+    const bool has_level      = ZigbeeEpHasCluster(zigbee_ep, 0x0008); // Level Control
+    const bool has_color      = ZigbeeEpHasCluster(zigbee_ep, 0x0300); // Color Control
+    const bool has_temperature = ZigbeeEpHasCluster(zigbee_ep, 0x0402); // Temperature Measurement
+    const bool has_occupancy   = ZigbeeEpHasCluster(zigbee_ep, 0x0406); // Occupancy Sensing
+
+    if (has_on_off)
+    {
+        if (has_color)
+        {
+            return 0x010D; // Extended Color Light
+        }
+        if (has_level)
+        {
+            return DEVICE_TYPE_DIMMABLE_LIGHT;
+        }
+        return DEVICE_TYPE_LO_ON_OFF_LIGHT;
+    }
+    if (has_temperature)
+    {
+        return DEVICE_TYPE_TEMP_SENSOR;
+    }
+    if (has_occupancy)
+    {
+        return 0x0107; // Occupancy Sensor
+    }
+    return DEVICE_TYPE_BRIDGED_NODE;
 }
 
 void Device::SetMatterDeviceTypes(m2z_device_params_t* zigbee_node, uint8_t ep_index)
@@ -69,8 +107,8 @@ void Device::SetMatterDeviceTypes(m2z_device_params_t* zigbee_node, uint8_t ep_i
             function_type = DEVICE_TYPE_LO_ON_OFF_LIGHT;
             break;
         default:
-            // Unknown Zigbee device type: report Bridged Node only instead of pretending to be a light.
-            function_type = DEVICE_TYPE_BRIDGED_NODE;
+            // Unknown/vendor specific Zigbee device ID: infer the type from the clusters.
+            function_type = InferMatterDeviceTypeFromClusters(&zigbee_node->endpoints[ep_index]);
             break;
         }
     }

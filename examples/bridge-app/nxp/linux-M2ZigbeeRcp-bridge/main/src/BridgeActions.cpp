@@ -127,7 +127,11 @@ void BridgeActions::PermitJoinAction(bool actionOn, EndpointId endpointId, uint1
     syslog(LOG_INFO, "%s: actionOn: 0x%x endpointId: 0x%x actionID: 0x%x ", __FUNCTION__, actionOn, endpointId, actionID);
     if(actionOn)
     {
-        m2z_schedule_request_bdb_start_commissioning();
+        /* Open the network with a direct NWK permit-join (180 s). BDB network
+           steering is ignored once the coordinator has already completed its
+           steering procedure, which previously left the bridge unable to
+           re-open the network for new devices. */
+        m2z_schedule_request_open_network();
     }
     else
     {

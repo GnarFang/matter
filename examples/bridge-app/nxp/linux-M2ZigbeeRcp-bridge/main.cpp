@@ -41,18 +41,19 @@
 #include <platform/Linux/NetworkCommissioningDriver.h>
 #include <pthread.h>
 #include <sys/ioctl.h>
+#include <app/server/Server.h>
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
+#include <iostream>
+#include <vector>
 
 #include "CommissionableInit.h"
 #include "Device.h"
 #include "main.h"
-#include <app/server/Server.h>
-
-#include <cassert>
-#include <iostream>
-#include <vector>
-
+#include "ZigbeeRcpImpl.h"
 #include "Bridge.h"
-
 
 using namespace chip;
 using namespace chip::app;
@@ -61,12 +62,6 @@ using namespace chip::Inet;
 using namespace chip::Transport;
 using namespace chip::DeviceLayer;
 using namespace chip::app::Clusters;
-
-
-int verbosity = 11;       // zcb log level
-
-#define SERIAL_PORT       "/dev/ttyUSB0"
-#define SERIAL_BAUDRATE   1000000
 
 #if CHIP_DEVICE_CONFIG_ENABLE_WPA
 DeviceLayer::NetworkCommissioning::LinuxWiFiDriver sLinuxWiFiDriver;
@@ -142,6 +137,32 @@ void * bridge_polling_thread(void * context)
 
 int main(int argc, char * argv[])
 {
+    // Optional device persistence (stable Matter endpoint ids + restore of the
+    // bridged device list after a reboot) is enabled with --persist or the
+    // M2Z_PERSIST=1 environment variable (handy for systemd units that cannot
+    // pass extra arguments). The flag is removed from argv so that
+    // ChipLinuxAppInit does not reject it.
+    {
+        const char * persist_env = getenv("M2Z_PERSIST");
+        if (persist_env != nullptr && (strcmp(persist_env, "1") == 0 || strcasecmp(persist_env, "true") == 0))
+        {
+            m2z_set_persist_enabled(ZB_TRUE);
+        }
+    }
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--persist") == 0)
+        {
+            m2z_set_persist_enabled(ZB_TRUE);
+            for (int j = i; j < argc - 1; j++)
+            {
+                argv[j] = argv[j + 1];
+            }
+            argc--;
+            i--;
+        }
+    }
+
     Bridge* bridge = new Bridge();
     if ( bridge->Init() != CHIP_NO_ERROR)
         return -1;

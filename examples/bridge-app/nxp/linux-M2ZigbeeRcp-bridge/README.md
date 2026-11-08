@@ -103,7 +103,7 @@ This On/Off cluster:
 
 M2ZigbeeRcp-bridge will just add this On/Off cluster structure to the `Device->clusterList`
 
-Finally, M2ZigbeeRcp-bridge adds the new Endpoint (in `AddDeviceEndpoint`) using the `emberAfSetDynamicEndpoint`Matter API  
+Finally, M2ZigbeeRcp-bridge registers the new Endpoint (in `SetDynamicEndpoint`) using the `emberAfSetDynamicEndpoint`Matter API
 ZED devices are now referenced with a Endpoint (starting at `3`) number of the M2ZigbeeRcp-bridge Matter NodeId
 
 ### Dynamic Endpoint control
