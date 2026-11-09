@@ -186,6 +186,22 @@ uint8_t Device::NodeReadAttributeIdFromClusterId(m2z_device_params_t * zigbee_no
     return (0xFF);
 }
 
+uint8_t Device::NodeWriteAttributeIdToClusterId(m2z_device_params_t * zigbee_node, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer, uint16_t size)
+{
+    zb_uint16_t ep_id, cluster_id, attr_id;
+    m2z_device_cluster_attr_t *attribute = NULL;
+
+    if(GetEndpointClusterAttributeIndexesForClusterAttrId(zigbee_node, zcl_cluster_id, zcl_attr_id, &ep_id, &cluster_id, &attr_id, true))
+    {
+        attribute = &(zigbee_node->endpoints[ep_id].ep_cluster[cluster_id].attribute[attr_id]);
+        uint16_t copy_size = (size < sizeof(attribute->attr_value_array)) ? size : sizeof(attribute->attr_value_array);
+        memcpy(&(attribute->attr_value_array), buffer, copy_size);
+        attribute->attr_state = GOT_VALUE_ATTR;
+        return (0);
+    }
+    return (0xFF);
+}
+
 uint8_t Device::readAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id)
 {
     if ( dev->mBridgeZigbeeRcpNode->dev_state == BRIDGED_UNAVAILABLE )

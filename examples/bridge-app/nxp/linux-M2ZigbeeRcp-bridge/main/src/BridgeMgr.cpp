@@ -1114,7 +1114,6 @@ Protocols::InteractionModel::Status BridgeDevMgr::HandleReadAttribute(Device * d
     {
         dev->readAttribute(dev, (uint16_t)clusterId, (uint16_t)translated_attributeId);
     }
-    usleep(COMMAND_COMPLETED_TIME_MS * 1000);
     dev->NodeReadAttributeIdFromClusterId(dev->GetZigbeeRcp(), (uint16_t)clusterId, (uint16_t)translated_attributeId, buffer, maxReadLength);
     //if ((attributeId == OnOff::Attributes::OnOff::Id) && (maxReadLength == 1))
     //{
@@ -1137,7 +1136,6 @@ Protocols::InteractionModel::Status BridgeDevMgr::HandleWriteAttribute(Device * 
 {
     syslog(LOG_DEBUG, "%s: clusterId=%d attrId=%d",__FUNCTION__, clusterId, attributeId);
     dev->writeAttribute(dev, (uint16_t)clusterId, (uint16_t)attributeId, buffer);
-    usleep(COMMAND_COMPLETED_TIME_MS * 1000);
 
     //if ((attributeId == OnOff::Attributes::OnOff::Id) && (dev->IsReachable()))
     //{
@@ -1361,6 +1359,12 @@ Protocols::InteractionModel::Status emberAfExternalAttributeWriteCallback(Endpoi
                                 endpoint, endpointIndex, clusterId, attributeMetadata->attributeId);
                 // Matter wants to write a Zigbee bridged node attribute which is ReadOnly attribute
                 // A translation to a Command may be needed here, but not implemented yet...
+                // Store the value into the Zigbee attribute shadow so the ZCL server
+                // (e.g. the LevelControl transition) converges instead of looping forever,
+                // and later reads/reports reflect the new value.
+                dev->NodeWriteAttributeIdToClusterId(dev->GetZigbeeRcp(), (uint16_t)clusterId,
+                                                     (uint16_t)attributeMetadata->attributeId, buffer,
+                                                     attributeMetadata->size);
                 
                 //if(dev->GetEndpointClusterIndexesForClusterId(dev->GetZigbeeRcp(), clusterId, &endpoint_idx, &cluster_idx))
                 //{

@@ -71,6 +71,7 @@ public:
     bool HasCluster(uint16_t zcl_cluster_id);
     ClusterId GetMatterClusterId(uint16_t zcl_cluster_id);
     uint8_t NodeReadAttributeIdFromClusterId(m2z_device_params_t * zigbee_node, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer, uint16_t maxReadLength);
+    uint8_t NodeWriteAttributeIdToClusterId(m2z_device_params_t * zigbee_node, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer, uint16_t size);
     uint8_t readAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id);
     uint8_t writeAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, uint8_t * buffer);
     uint8_t canWriteAttribute(Device* dev, uint16_t zcl_cluster_id, uint16_t zcl_attr_id, Protocols::InteractionModel::Status * zcl_attr_status);

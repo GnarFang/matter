@@ -815,6 +815,28 @@ void m2z_callback_dev_associated(zb_nwk_signal_device_associated_params_t *dev_a
 }
 
 /* Callback which will be called on Device Updated packet. */
+/* A device that re-joins after a failed first interview is already in the table
+ * but has no endpoint information: the ZDO active endpoint request timed out or
+ * was never answered. Restart the discovery instead of leaving the device in a
+ * state that can only be recovered by restarting the application. */
+static void m2z_restart_discovery_if_uninitialized(zb_uint16_t dev_idx)
+{
+    if (dev_idx == MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+    {
+        return;
+    }
+
+    if (g_device_ctx.devices[dev_idx].announced_to_bridge != 0 ||
+        g_device_ctx.devices[dev_idx].endpoint != 0)
+    {
+        return;
+    }
+
+    syslog(LOG_INFO, "%s: device 0x%x re-joined without endpoint info, restart discovery",
+           __FUNCTION__, g_device_ctx.devices[dev_idx].short_addr);
+    ZB_SCHEDULE_APP_ALARM(m2z_schedule_request_active_ep, (uint8_t)dev_idx, 0.1 * ZB_TIME_ONE_SECOND);
+}
+
 void m2z_callback_dev_updated(zb_zdo_signal_device_update_params_t *dev_updated_params)
 {
     syslog(LOG_DEBUG, ">> %s ", __FUNCTION__);
@@ -832,6 +854,7 @@ void m2z_callback_dev_updated(zb_zdo_signal_device_update_params_t *dev_updated_
             /* Keep the table in sync when a device re-joins with a new address. */
             g_device_ctx.devices[idx].short_addr = dev_updated_params->short_addr;
         }
+        m2z_restart_discovery_if_uninitialized(idx);
     }
     syslog(LOG_DEBUG, "<<  %s ", __FUNCTION__);
 }
@@ -846,6 +869,19 @@ void m2z_callback_dev_annce(zb_zdo_signal_device_annce_params_t *device_annce_pa
     {
         syslog(LOG_DEBUG, "%s: It is known device, update its short Address", __FUNCTION__);
         g_device_ctx.devices[idx].short_addr = device_annce_params->device_short_addr;
+        /* After a coordinator reboot a router child re-announces (Device
+         * Announce) without going through device authorization, so the
+         * BRIDGE_SET_DEV_ACTIVE path in m2z_callback_dev_authorized() never
+         * runs: the Matter endpoint stays restored-as-not-reachable and every
+         * command is rejected with "Command failed". Re-enable it here. */
+        if (g_device_ctx.devices[idx].dev_state == BRIDGED_UNAVAILABLE ||
+            g_device_ctx.devices[idx].dev_state == BRIDGED_LEFT_NETWORK)
+        {
+            syslog(LOG_INFO, "%s: known device 0x%x re-announced, re-enable its dynamic endpoint",
+                   __FUNCTION__, device_annce_params->device_short_addr);
+            int MsgType = BRIDGE_SET_DEV_ACTIVE;
+            (ZigbeeRcp_msg_callback)(MsgType, (m2z_device_params_t *)(&(g_device_ctx.devices[idx])), &idx);
+        }
     }
     else
     {
@@ -904,6 +940,7 @@ void m2z_callback_dev_authorized(zb_zdo_signal_device_authorized_params_t *dev_a
             /* A re-joining device can be assigned a new short address. */
             g_device_ctx.devices[idx].short_addr = dev_authorized_params->short_addr;
         }
+        m2z_restart_discovery_if_uninitialized(idx);
         syslog(LOG_DEBUG, "%s: Device: Short Addr: 0x%x IEEE Addr: " TRACE_FORMAT_64 "" \
         , __FUNCTION__, g_device_ctx.devices[idx].short_addr, TRACE_ARG_64(g_device_ctx.devices[idx].ieee_addr));
     }
@@ -1403,9 +1440,27 @@ void m2z_request_attr_disc(zb_cb_param_t cb_param)
   }
   else
   {
-        syslog(LOG_DEBUG, "%s: No more endpoints without known attributes from 0x%x (Zb dev index: %d) -> dev->announced_to_bridge = %d"
-        , __FUNCTION__,dev->short_addr, dev_idx, dev->announced_to_bridge);
-        if(dev->announced_to_bridge == 0)
+        zb_bool_t all_eps_known = 1;
+
+        // Empty cluster list doesn't mean all descriptors arrived. In-flight endpoints (num_in_clusters=0) get dropped by BridgeMgr if announced early.
+        for (zb_uint16_t i = 0; i < dev->endpoint; i++)
+        {
+            if (dev->endpoints[i].clusters_state != KNOWN_CLUSTER)
+            {
+                all_eps_known = 0;
+                break;
+            }
+        }
+
+        syslog(LOG_DEBUG, "%s: No more endpoints without known attributes from 0x%x (Zb dev index: %d) -> all_eps_known = %d, dev->announced_to_bridge = %d"
+        , __FUNCTION__,dev->short_addr, dev_idx, all_eps_known, dev->announced_to_bridge);
+
+        if(!all_eps_known)
+        {
+            syslog(LOG_INFO, "%s: Defer announce of 0x%x, Simple Descriptor still pending (Zb dev index: %d)"
+                , __FUNCTION__,dev->short_addr, dev_idx);
+        }
+        else if(dev->announced_to_bridge == 0)
         {
             dev->announced_to_bridge = 1;
             syslog(LOG_INFO, "%s: All Discover Attributes of 0x%x were queried for Discover Attributes, Announce this device to BridgeMgr "
