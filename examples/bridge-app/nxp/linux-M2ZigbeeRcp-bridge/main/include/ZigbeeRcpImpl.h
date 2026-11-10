@@ -42,10 +42,6 @@ extern "C" {
 // time to wait in ms that Zigbee commands are completed
 #define COMMAND_COMPLETED_TIME_MS (300)
 
-// maximum time in ms to wait for the Zigbee command ack before giving up (prevents blocking the
-// Matter main loop forever if the RCP never answers)
-#define SEND_COMMAND_ACK_TIMEOUT_MS (500)
-
 /* Device persistence (bridged device list + stable Matter endpoint ids) is
  * optional and enabled with the --persist command line argument. When it is
  * not enabled every start begins with an empty device list. */

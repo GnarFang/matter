@@ -234,19 +234,73 @@ void m2z_request_bdb_start_commissioning(zb_cb_param_t cb_param)
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
 
+static zb_uint8_t m2z_permit_join_cb(zb_cb_param_t cb_param)
+{
+  zb_bufid_t buf = ZB_UNPACK_BUF_REF(cb_param);
+
+  if (buf)
+  {
+    const zb_uint8_t *raw = zb_buf_begin(buf);
+    syslog(LOG_INFO, "%s: permit join confirm len %d data %02x %02x %02x %02x %02x %02x", __FUNCTION__, (int) zb_buf_len(buf),
+           raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
+  }
+
+  if (buf)
+  {
+    zb_buf_free(buf);
+  }
+
+  return ZB_TRUE;
+}
+
+static void m2z_request_permit_join(zb_uint8_t permit_duration)
+{
+  zb_zdo_mgmt_permit_joining_req_param_t *req = NULL;
+  zb_bufid_t buf = zb_buf_get_out();
+
+  if (!buf)
+  {
+    /* No free buffer right now: let the ZBOSS scheduler hand us one later and
+     * go through m2z_request_open_network()/m2z_request_close_network(). */
+    if (permit_duration)
+    {
+      zb_buf_get_out_delayed_ext(m2z_request_open_network, 0, 0);
+    }
+    else
+    {
+      zb_buf_get_out_delayed_ext(m2z_request_close_network, 0, 0);
+    }
+    syslog(LOG_WARNING, "%s: no free ZBOSS buffer, retry scheduled", __FUNCTION__);
+    return;
+  }
+
+  req = ZB_BUF_GET_PARAM(buf, zb_zdo_mgmt_permit_joining_req_param_t);
+  ZB_BZERO(req, sizeof(zb_zdo_mgmt_permit_joining_req_param_t));
+  req->dest_addr       = zb_get_short_address();
+  req->permit_duration = permit_duration;
+  req->tc_significance = 1;
+
+  zb_uint8_t tsn = zb_zdo_mgmt_permit_joining_req(buf, m2z_permit_join_cb);
+  if (tsn == 0xFF)
+  {
+    /* Callback is not invoked when the request was not executed: free here. */
+    syslog(LOG_WARNING, "%s: permit join request (duration %d) rejected by ZDO", __FUNCTION__, permit_duration);
+    zb_buf_free(buf);
+  }
+}
+
 void m2z_request_open_network(zb_cb_param_t cb_param)
 {
   zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
-  zb_zdo_mgmt_permit_joining_req_param_t *req;
 
   syslog(LOG_DEBUG, ">> %s param: %d", __FUNCTION__, param);
 
-  req = ZB_BUF_GET_PARAM(param, zb_zdo_mgmt_permit_joining_req_param_t);
-  ZB_BZERO(req, sizeof(zb_zdo_mgmt_permit_joining_req_param_t));
-  req->dest_addr = zb_get_short_address();
-  req->permit_duration = 180;
-  req->tc_significance = 1;
-  zb_zdo_mgmt_permit_joining_req(param, NULL);
+  if (param)
+  {
+    zb_buf_free(param);
+  }
+
+  m2z_request_permit_join(180);
 
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
@@ -254,16 +308,15 @@ void m2z_request_open_network(zb_cb_param_t cb_param)
 void m2z_request_close_network(zb_cb_param_t cb_param)
 {
   zb_bufid_t param = ZB_UNPACK_BUF_REF(cb_param);
-  zb_zdo_mgmt_permit_joining_req_param_t *req;
 
   syslog(LOG_DEBUG, ">> %s param: %d", __FUNCTION__, param);
 
-  req = ZB_BUF_GET_PARAM(param, zb_zdo_mgmt_permit_joining_req_param_t);
-  ZB_BZERO(req, sizeof(zb_zdo_mgmt_permit_joining_req_param_t));
-  req->dest_addr = zb_get_short_address();
-  req->permit_duration = 0;
-  req->tc_significance = 1;
-  zb_zdo_mgmt_permit_joining_req(param, NULL);
+  if (param)
+  {
+    zb_buf_free(param);
+  }
+
+  m2z_request_permit_join(0);
 
   syslog(LOG_DEBUG, "<< %s param: %d", __FUNCTION__, param);
 }
@@ -275,9 +328,13 @@ void m2z_impl_init()
 
     /* Trace enable */
     ZB_SET_TRACE_ON();
-    /* Verbose security trace (temporary debug): NWK/ZDO/SECUR subsystems. */
+    /* Verbose security trace (temporary debug): NWK/ZDO/SECUR subsystems.
+     * Kept only as an explicit opt-in so that the trace configuration comes
+     * from ZB_TRACE_LEVEL / ZB_TRACE_MASK by default. */
+#if 0
     ZB_SET_TRACE_LEVEL(4);
     ZB_SET_TRACE_MASK(0x000000C8);
+#endif
 
     /* Global Matter To ZigbeeRcp Bridge initialization */
     ZB_INIT("M2ZigbeeRcp-bridge");
@@ -323,7 +380,6 @@ void m2z_impl_init()
     #ifdef ZB_ASSERT_SEND_NWK_REPORT
     zb_register_zboss_callback(ZB_ASSERT_INDICATION_CB, SET_ZBOSS_CB(assert_indication_cb));
     #endif
-
 }
 
 void * m2z_impl_ZigbeeRcpMonitor(void * context)
@@ -360,6 +416,28 @@ int m2z_register_message_callback(m2z_callback_t callback_function)
     return 0;
 }
 
+/* A device that sends us any ZCL frame is reachable by definition. Router
+ * children that stay powered through a coordinator reboot resume sending ZCL
+ * traffic (e.g. their periodic Time attribute read) without re-announcing or
+ * re-authorizing, so neither m2z_callback_dev_annce() nor
+ * m2z_callback_dev_authorized() re-enables their Matter endpoint. Re-enable it
+ * here so controller commands are no longer rejected with "Command failed". */
+static void m2z_reactivate_if_talking(zb_uint16_t dev_idx)
+{
+    if (dev_idx == MATTER_ZIGBEERCP_BRIDGE_INVALID_DEV_INDEX)
+    {
+        return;
+    }
+    if (g_device_ctx.devices[dev_idx].dev_state == BRIDGED_UNAVAILABLE ||
+        g_device_ctx.devices[dev_idx].dev_state == BRIDGED_LEFT_NETWORK)
+    {
+        syslog(LOG_INFO, "%s: device 0x%x is talking again, re-enable its dynamic endpoint",
+               __FUNCTION__, g_device_ctx.devices[dev_idx].short_addr);
+        int MsgType = BRIDGE_SET_DEV_ACTIVE;
+        (ZigbeeRcp_msg_callback)(MsgType, (m2z_device_params_t *)(&(g_device_ctx.devices[dev_idx])), &dev_idx);
+    }
+}
+
 /* Callback which will be called on incoming ZCL packet. */
 zb_uint8_t zcl_specific_cluster_cmd_handler(zb_cb_param_t cb_param)
 {
@@ -369,6 +447,9 @@ zb_uint8_t zcl_specific_cluster_cmd_handler(zb_cb_param_t cb_param)
     zb_uint8_t cmd_processed = 0;
     zb_uint16_t dst_addr = ZB_ZCL_PARSED_HDR_SHORT_DATA(cmd_info).source.u.short_addr;
     zb_uint8_t dst_ep = ZB_ZCL_PARSED_HDR_SHORT_DATA(cmd_info).src_endpoint;
+
+    /* Re-enable a restored-but-unavailable device as soon as it sends us anything. */
+    m2z_reactivate_if_talking(m2z_dev_get_index_by_short_addr(dst_addr));
 
     syslog(LOG_DEBUG, ">>  %s ", __FUNCTION__);
 
@@ -1198,19 +1279,6 @@ void m2z_schedule_send_command(m2z_device_params_t *dev, zb_uint16_t ep_id, zb_u
     memcpy(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].command_req.cmd_data, cmd_data, cmd_size);
     
     zb_buf_get_out_delayed_ext(m2z_request_send_command, dev_idx, 0);
-    uint16_t waited_ms = 0;
-    while(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command &&
-          waited_ms < SEND_COMMAND_ACK_TIMEOUT_MS)
-    {
-        usleep(1000);
-        waited_ms++;
-    }
-    if(g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command)
-    {
-        syslog(LOG_WARNING, "%s: no ack for dev %u ep 0x%04x cluster 0x%04x cmd 0x%02x after %d ms, dropping request",
-               __FUNCTION__, (unsigned)dev_idx, (unsigned)ep_id, (unsigned)cluster_id, (unsigned)cmd_id, SEND_COMMAND_ACK_TIMEOUT_MS);
-        g_device_ctx.devices[dev_idx].endpoints[ep_idx].ep_cluster[cluster_idx].pending_command = false;
-    }
     usleep(COMMAND_COMPLETED_TIME_MS * 1000);
     syslog(LOG_DEBUG, "<< %s ", __FUNCTION__);
 

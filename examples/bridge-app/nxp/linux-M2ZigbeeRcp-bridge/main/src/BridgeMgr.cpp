@@ -1073,6 +1073,14 @@ Protocols::InteractionModel::Status BridgeDevMgr::HandleReadAttribute(Device * d
     // if clusterId is BridgedDeviceBasicInformation::Id
     if(is_bridged_basic)
     {
+        // Reachable is a Matter-only attribute (no Zigbee equivalent): answer it
+        // directly from the bridge's link state so the controller can gate
+        // control on the bridged device's real reachability.
+        if (attributeId == BridgedDeviceBasicInformation::Attributes::Reachable::Id)
+        {
+            *buffer = dev->IsReachable() ? 1 : 0;
+            return Protocols::InteractionModel::Status::Success;
+        }
         // Zigbee clusterId should be 0x0 (the Basic Zigbee cluster)
         clusterId = 0;
         // a translation is also required from Matter to Zigbee attribute ID
@@ -1234,7 +1242,13 @@ void BridgeDevMgr::HandleZigbeeDeviceStatusChanged(Device * dev, Device::Changed
 
     if (itemChangedMask & Device::kChanged_Reachable)
     {
-        ScheduleReportingCallback(dev, OnOff::Id, OnOff::Attributes::OnOff::Id);
+        // Re-report OnOff only when the device comes online, so the controller can
+        // clear its offline flag on a fresh value. Reporting on the offline
+        // transition would carry a stale value and wrongly mark the device online.
+        if (dev->IsReachable())
+        {
+            ScheduleReportingCallback(dev, OnOff::Id, OnOff::Attributes::OnOff::Id);
+        }
     }
 }
 
